@@ -77,7 +77,7 @@ const AdminSetup = () => {
     setTimeout(() => { setEmailjsConfigSaving(false); alert('EmailJS configuration saved'); }, 500);
   };
 
-  // ===== Helpers from Analytics logic (对齐你的 Analytics (2).jsx) =====
+  // ===== Helpers from Analytics logic =====
   const getPreviousWeek = (currentWeek) => {
     const d = new Date(currentWeek);
     d.setDate(d.getDate() - 7);
@@ -131,7 +131,7 @@ const AdminSetup = () => {
     return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
   };
 
-  // ===== PDF builder (A4 版式，和你 Analytics 的信息结构一致) =====
+  // ===== PDF builder (A4 版式) =====
   const buildStyledPdfDataUrl = ({ summary, rows }) => {
     const doc = new jsPDF('p', 'mm', 'a4');
     const pageW = doc.internal.pageSize.getWidth();
@@ -185,7 +185,7 @@ const AdminSetup = () => {
       doc.setTextColor(...gray);
     }
 
-    // 表格（使用 autoTable）
+    // 表格
     const startY = warnY + 4;
     autoTable(doc, {
       startY,
@@ -226,7 +226,7 @@ const AdminSetup = () => {
     return doc.output('datauristring');
   };
 
-  // 从数据库拉数据，按 Analytics 的规则计算汇总与表格
+  // 从数据库拉数据，按页面逻辑计算汇总与表格
   const buildReportData = async () => {
     const [weeklyRecords, yardsMap] = await Promise.all([
       getAllWeeklyRecords(),
@@ -253,15 +253,11 @@ const AdminSetup = () => {
       if (yd.Class === 'JV Dealer') jvStock += currentStock || 0;
       if (yd.Class === 'External') externalStock += currentStock || 0;
 
-      // 上周对比
+      // 上周对比（如果你将来要画趋势，可使用）
       const previousWeek = getPreviousWeek(currentWeek);
       const previousStock = getPreviousWeekStock(yardName, weeklyRecords, previousWeek);
       const stockChange = (currentStock != null && previousStock != null)
         ? (currentStock - previousStock) : null;
-
-      // 是否越界（仅供你自己在表格里看，可选）
-      const isCritical = currentStock != null && yd.Min != null && yd.Max != null &&
-        (currentStock < yd.Min || currentStock > yd.Max);
 
       const lastReportDate = getLastReportDate(yardName, weeklyRecords);
 
@@ -274,7 +270,8 @@ const AdminSetup = () => {
         max: yd.Max,
         isReported: !!currentRecord,
         unreportedWeeks: getUnreportedWeeksCount(yardName, weeklyRecords),
-        isCritical,
+        isCritical: currentStock != null && yd.Min != null && yd.Max != null &&
+          (currentStock < yd.Min || currentStock > yd.Max),
         lastReportDate
       };
     }).sort((a, b) => a.yard.localeCompare(b.yard));
@@ -284,7 +281,7 @@ const AdminSetup = () => {
     return { summary, rows };
   };
 
-  // ===== 发送测试邮件（生成“精排版 PDF” → EmailJS Variable Attachment） =====
+  // ===== 发送测试邮件 =====
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   const sendTestEmail = async () => {
@@ -302,8 +299,8 @@ const AdminSetup = () => {
         return;
       }
 
-      // 1) 拉数据并生成“精排版 PDF”
-      const { summary, rows } = await buildReportData(); // 数据口径对齐 Analytics (2).jsx
+      // 1) 拉数据并生成 PDF
+      const { summary, rows } = await buildReportData();
       const pdfDataUrl = buildStyledPdfDataUrl({ summary, rows });
 
       if (typeof pdfDataUrl !== 'string' || !pdfDataUrl.startsWith('data:application/pdf')) {
@@ -316,7 +313,7 @@ const AdminSetup = () => {
         const params = {
           to_email: to,
           report_date: new Date().toLocaleDateString(),
-          pdf_attachment: pdfDataUrl // 和模板 Attachments 的 Parameter Name 一致
+          pdf_attachment: pdfDataUrl // 模板 Attachments 的 Variable Name 必须是 pdf_attachment
         };
         await emailjs.send(emailjsConfig.serviceId, emailjsConfig.templateId, params);
         await sleep(1200);
@@ -392,7 +389,7 @@ const AdminSetup = () => {
           <ol className="text-sm text-blue-700 space-y-1">
             <li>1) 在 EmailJS 模板的 <b>Attachments</b> 里添加 <b>Variable Attachment</b></li>
             <li>2) <b>Parameter Name = pdf_attachment</b>, <b>Content Type = PDF</b>, 文件名可固定为 <code>yard-report.pdf</code></li>
-            <li>3) 模板正文可使用变量：<code>{{`{{to_email}}`}}</code>, <code>{{`{{report_date}}`}}</code></li>
+            <li>3) 模板正文可使用变量：<code>{'{{to_email}}'}</code>, <code>{'{{report_date}}'}</code></li>
           </ol>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -449,7 +446,7 @@ const AdminSetup = () => {
 
       {/* Yard CRUD */}
       <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">{editingYard ? 'Edit Yard' : 'Add New Yard'}</h2>
+        <h2 className="text-xl font-semibold mb-4">{editingYard ? 'Edit New Yard' : 'Add New Yard'}</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
