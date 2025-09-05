@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { createYard, updateYard, deleteYard, getAllYards } from '../firebase/database';
 import emailjs from '@emailjs/browser';
+import { jsPDF } from 'jspdf';
 
 const AdminSetup = () => {
   const [yards, setYards] = useState({});
@@ -62,58 +63,77 @@ const AdminSetup = () => {
   const saveEmailjsConfig = () => {
     setEmailjsConfigSaving(true);
     localStorage.setItem('emailjsConfig', JSON.stringify(emailjsConfig));
-    
     setTimeout(() => {
       setEmailjsConfigSaving(false);
       alert('EmailJS configuration saved successfully!');
-    }, 1000);
+    }, 800);
   };
 
   const saveEmailConfig = () => {
     setEmailSaving(true);
     localStorage.setItem('emailConfig', JSON.stringify(emailConfig));
-    
     setTimeout(() => {
       setEmailSaving(false);
       alert('Email configuration saved successfully!');
-    }, 1000);
+    }, 800);
   };
+
+  // 轻微节流，避免 EmailJS 速率限制
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   const sendTestEmail = async () => {
     try {
-      // Generate a test PDF blob
-      const testPdfBlob = new Blob(['Test PDF content for email'], { type: 'application/pdf' });
-      
-      // Convert PDF to base64
-      const reader = new FileReader();
-      reader.onload = function() {
-        const base64PDF = reader.result.split(',')[1];
-        
-        // Send email with PDF attachment
+      // 1) 用 jsPDF 生成“真正的”PDF（合法的 %PDF 文件）
+      const doc = new jsPDF();
+      doc.setFontSize(16);
+      doc.text('Yard Report (Test)', 14, 20);
+      doc.setFontSize(11);
+      doc.text(`Generated at: ${new Date().toLocaleString()}`, 14, 30);
+
+      // 2) 拿到“完整 Data URL”（包含 data:application/pdf;base64, 前缀）
+      const pdfDataUrl = doc.output('datauristring');
+      if (!pdfDataUrl.startsWith('data:application/pdf;base64,')) {
+        throw new Error('PDF generation failed (not a PDF Data URL).');
+      }
+
+      // 3) 初始化 emailjs（只用 Public Key）
+      emailjs.init(emailjsConfig.publicKey);
+
+      // 4) 多收件人逐个发送（逗号分隔）
+      const recipients = (emailConfig.recipients || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
+
+      if (recipients.length === 0) {
+        alert('Please fill in at least one recipient.');
+        return;
+      }
+
+      for (const to of recipients) {
         const templateParams = {
-          to_email: emailConfig.recipients,
+          // 与 EmailJS 模板字段对应
+          to_email: to,
           report_date: new Date().toLocaleDateString(),
-          pdf_attachment: base64PDF,
-          attachment_name: `yard_report_${new Date().toISOString().split('T')[0]}.pdf`
+          // 关键：传“完整 Data URL”到 Variable Attachment (Parameter Name=pdf_attachment)
+          pdf_attachment: pdfDataUrl
+          // 说明：如需动态文件名，可在模板中固定 filename=yard-report.pdf，更稳
         };
-        
-        emailjs.send(
+
+        await emailjs.send(
           emailjsConfig.serviceId,
           emailjsConfig.templateId,
-          templateParams,
-          emailjsConfig.publicKey
-        ).then((response) => {
-          console.log('Test email sent successfully:', response);
-          alert('Test email sent successfully!');
-        }).catch((error) => {
-          console.error('Failed to send test email:', error);
-          alert('Failed to send test email: ' + error.text);
-        });
-      };
-      reader.readAsDataURL(testPdfBlob);
+          templateParams
+        );
+
+        // EmailJS REST 节流 ~1 rps；浏览器 SDK 也建议稍作间隔
+        await sleep(1200);
+      }
+
+      alert('Test email sent successfully!');
     } catch (error) {
       console.error('Error sending test email:', error);
-      alert('Error sending test email: ' + error.message);
+      alert('Error sending test email: ' + (error?.message || 'Unknown error'));
     }
   };
 
@@ -335,22 +355,11 @@ const AdminSetup = () => {
             <h3 className="text-sm font-medium text-blue-800 mb-2">Setup Instructions:</h3>
             <ol className="text-sm text-blue-700 space-y-1">
               <li>1. Create an account at <a href="https://www.emailjs.com/" target="_blank" rel="noopener noreferrer" className="underline">emailjs.com</a></li>
-              <li>2. Create an Email Service (e.g., Gmail)</li>
-              <li>3. Create an Email Template with variables: to_email, report_date, pdf_attachment, attachment_name</li>
-              <li>4. Get your Service ID, Template ID, and Public Key</li>
-              <li>5. Enter them below and save</li>
+              <li>2. Create an Email Service (e.g., Gmail/SMTP)</li>
+              <li>3. Create an Email Template with variables: <code>to_email</code>, <code>report_date</code></li>
+              <li>4. In <strong>Attachments</strong>, add a <strong>Variable Attachment</strong> with <strong>Parameter Name = pdf_attachment</strong>, <strong>Content Type = PDF</strong>, a fixed filename like <code>yard-report.pdf</code>.</li>
+              <li>5. Fill Service ID, Template ID, Public Key below and save.</li>
             </ol>
-          </div>
-
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-            <h3 className="text-sm font-medium text-yellow-800 mb-2">Email Template Setup:</h3>
-            <p className="text-sm text-yellow-700 mb-2">Your EmailJS template should include these variables:</p>
-            <ul className="text-sm text-yellow-700 space-y-1">
-              <li>• <code>to_email</code> - Recipient email address</li>
-              <li>• <code>report_date</code> - Report generation date</li>
-              <li>• <code>pdf_attachment</code> - Base64 encoded PDF content</li>
-              <li>• <code>attachment_name</code> - PDF file name</li>
-            </ul>
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -408,7 +417,12 @@ const AdminSetup = () => {
             
             <button
               onClick={sendTestEmail}
-              disabled={!emailConfig.recipients || !emailjsConfig.serviceId || !emailjsConfig.templateId || !emailjsConfig.publicKey}
+              disabled={
+                !emailConfig.recipients ||
+                !emailjsConfig.serviceId ||
+                !emailjsConfig.templateId ||
+                !emailjsConfig.publicKey
+              }
               className="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
               Send Test Email
@@ -426,7 +440,7 @@ const AdminSetup = () => {
             <h3 className="text-sm font-medium text-orange-800 mb-2">Note about Scheduled Emails:</h3>
             <p className="text-sm text-orange-700">
               This is a frontend-only application. Scheduled emails will only work when someone has the app open in their browser. 
-              For true automated scheduling, you would need a backend service or Firebase Cloud Functions.
+              For true automated scheduling, please use a backend service (e.g., Render Cron Job or Firebase Cloud Functions).
             </p>
           </div>
           
