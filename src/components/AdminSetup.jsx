@@ -5,7 +5,6 @@ import {
 } from '../firebase/database';
 import emailjs from '@emailjs/browser';
 import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
 
 const AdminSetup = () => {
   const [yards, setYards] = useState({});
@@ -55,12 +54,10 @@ const AdminSetup = () => {
     const { name, value } = e.target;
     setFormData((p) => ({ ...p, [name]: value }));
   };
-
   const handleEmailConfigChange = (e) => {
     const { name, value, type, checked } = e.target;
     setEmailConfig((p) => ({ ...p, [name]: type === 'checkbox' ? checked : value }));
   };
-
   const handleEmailjsConfigChange = (e) => {
     const { name, value } = e.target;
     setEmailjsConfig((p) => ({ ...p, [name]: value }));
@@ -77,7 +74,7 @@ const AdminSetup = () => {
     setTimeout(() => { setEmailjsConfigSaving(false); alert('EmailJS configuration saved'); }, 500);
   };
 
-  // ===== Helpers from Analytics logic =====
+  // ===== 取数 & 计算（与 Analytics 口径一致） =====
   const getPreviousWeek = (currentWeek) => {
     const d = new Date(currentWeek);
     d.setDate(d.getDate() - 7);
@@ -131,102 +128,6 @@ const AdminSetup = () => {
     return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
   };
 
-  // ===== PDF builder (A4 版式) =====
-  const buildStyledPdfDataUrl = ({ summary, rows }) => {
-    const doc = new jsPDF('p', 'mm', 'a4');
-    const pageW = doc.internal.pageSize.getWidth();
-    const pageH = doc.internal.pageSize.getHeight();
-
-    // 主题色
-    const blue = [37, 99, 235];     // #2563eb
-    const gray = [55, 65, 81];      // #374151
-
-    // Header 背景条
-    doc.setFillColor(...blue);
-    doc.rect(0, 0, pageW, 22, 'F');
-
-    // 标题
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(16);
-    doc.text('YARD INVENTORY REPORT', 10, 14);
-    doc.setFontSize(10);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, pageW - 10, 14, { align: 'right' });
-
-    // KPI 卡片
-    doc.setTextColor(...gray);
-    const boxY = 30;
-    const boxW = (pageW - 20 - 9) / 4; // 10 左右边距 + 3*3 间距
-    const boxH = 22;
-    const kpis = [
-      { label: 'TOTAL', value: summary.totalStock },
-      { label: 'SELF-OWNED', value: summary.selfOwnedStock },
-      { label: 'JV', value: summary.jvStock },
-      { label: 'EXTERNAL', value: summary.externalStock }
-    ];
-    kpis.forEach((k, i) => {
-      const x = 10 + i * (boxW + 3);
-      doc.setDrawColor(229, 231, 235);
-      doc.setFillColor(248, 250, 252);
-      doc.roundedRect(x, boxY, boxW, boxH, 2, 2, 'FD');
-      doc.setFontSize(9);
-      doc.text(k.label, x + 4, boxY + 8);
-      doc.setFontSize(14);
-      doc.setTextColor(...blue);
-      doc.text(String(k.value?.toLocaleString?.() ?? k.value), x + 4, boxY + 17);
-      doc.setTextColor(...gray);
-    });
-
-    // 未上报提示
-    doc.setFontSize(10);
-    const warnY = boxY + boxH + 8;
-    if ((summary.unreportedYards?.length || 0) > 0) {
-      doc.setTextColor(220, 38, 38);
-      doc.text(`⚠ ${summary.unreportedYards.length} yard(s) missing data this week`, 10, warnY);
-      doc.setTextColor(...gray);
-    }
-
-    // 表格
-    const startY = warnY + 4;
-    autoTable(doc, {
-      startY,
-      head: [[
-        'Yard', 'Class', 'Stock', 'Min', 'Max', 'Unreported Weeks', 'Last Report Date'
-      ]],
-      body: rows.map(r => ([
-        r.yard,
-        r.class,
-        r.stockLevel ?? '',
-        r.min ?? '',
-        r.max ?? '',
-        r.unreportedWeeks ?? '',
-        fmtDate(r.lastReportDate)
-      ])),
-      styles: { fontSize: 9, cellPadding: 2 },
-      headStyles: { fillColor: blue, textColor: 255, halign: 'left' },
-      columnStyles: {
-        2: { halign: 'right' }, // Stock
-        3: { halign: 'right' }, // Min
-        4: { halign: 'right' }, // Max
-        5: { halign: 'right' }, // Unreported Weeks
-        6: { halign: 'left' }   // Date
-      },
-      theme: 'grid',
-      margin: { left: 10, right: 10 }
-    });
-
-    // Footer 页码
-    const pageCount = doc.getNumberOfPages();
-    for (let i = 1; i <= pageCount; i++) {
-      doc.setPage(i);
-      doc.setFontSize(9);
-      doc.setTextColor(107, 114, 128);
-      doc.text(`Page ${i} / ${pageCount}`, pageW - 10, pageH - 8, { align: 'right' });
-    }
-
-    return doc.output('datauristring');
-  };
-
-  // 从数据库拉数据，按页面逻辑计算汇总与表格
   const buildReportData = async () => {
     const [weeklyRecords, yardsMap] = await Promise.all([
       getAllWeeklyRecords(),
@@ -247,14 +148,12 @@ const AdminSetup = () => {
 
       if (!currentRecord) unreportedYards.push(yardName);
 
-      // 汇总
       totalStock += currentStock || 0;
       if (yd.Class === 'Self-owned') selfOwnedStock += currentStock || 0;
       if (yd.Class === 'JV Dealer') jvStock += currentStock || 0;
       if (yd.Class === 'External') externalStock += currentStock || 0;
 
-      // 上周对比（如果你将来要画趋势，可使用）
-      const previousWeek = getPreviousWeek(currentWeek);
+      const previousWeek = getPreviousWeek(getWeekStartDate());
       const previousStock = getPreviousWeekStock(yardName, weeklyRecords, previousWeek);
       const stockChange = (currentStock != null && previousStock != null)
         ? (currentStock - previousStock) : null;
@@ -277,13 +176,153 @@ const AdminSetup = () => {
     }).sort((a, b) => a.yard.localeCompare(b.yard));
 
     const summary = { totalStock, selfOwnedStock, jvStock, externalStock, unreportedYards };
-
     return { summary, rows };
   };
 
-  // ===== 发送测试邮件 =====
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  // ===== 用 jsPDF 自绘“好看表格”（自动分页）=====
+  const buildStyledPdfDataUrl = ({ summary, rows }) => {
+    const doc = new jsPDF('p', 'mm', 'a4');
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
 
+    const blue = [37, 99, 235];
+    const gray = [55, 65, 81];
+
+    // Header
+    doc.setFillColor(...blue);
+    doc.rect(0, 0, pageW, 22, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(16);
+    doc.text('YARD INVENTORY REPORT', 10, 14);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, pageW - 10, 14, { align: 'right' });
+
+    // KPI
+    doc.setTextColor(...gray);
+    const boxY = 30;
+    const boxW = (pageW - 20 - 9) / 4;
+    const boxH = 22;
+    const kpis = [
+      { label: 'TOTAL', value: summary.totalStock },
+      { label: 'SELF-OWNED', value: summary.selfOwnedStock },
+      { label: 'JV', value: summary.jvStock },
+      { label: 'EXTERNAL', value: summary.externalStock }
+    ];
+    kpis.forEach((k, i) => {
+      const x = 10 + i * (boxW + 3);
+      doc.setDrawColor(229, 231, 235);
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(x, boxY, boxW, boxH, 2, 2, 'FD');
+      doc.setFontSize(9);
+      doc.text(k.label, x + 4, boxY + 8);
+      doc.setFontSize(14);
+      doc.setTextColor(...blue);
+      doc.text(String(k.value?.toLocaleString?.() ?? k.value), x + 4, boxY + 17);
+      doc.setTextColor(...gray);
+    });
+
+    // Warn
+    doc.setFontSize(10);
+    let cursorY = boxY + boxH + 8;
+    if ((summary.unreportedYards?.length || 0) > 0) {
+      doc.setTextColor(220, 38, 38);
+      doc.text(`⚠ ${summary.unreportedYards.length} yard(s) missing data this week`, 10, cursorY);
+      doc.setTextColor(...gray);
+    }
+    cursorY += 6;
+
+    // Table
+    const marginX = 10;
+    const headers = ['Yard', 'Class', 'Stock', 'Min', 'Max', 'Unreported', 'Last Report'];
+    const colsW = [48, 25, 22, 16, 16, 28, 35]; // 总宽 190 内
+    const rowH = 8;
+
+    const drawHeader = () => {
+      doc.setFillColor(...blue);
+      doc.setTextColor(255, 255, 255);
+      doc.rect(marginX, cursorY - 6, colsW.reduce((a, b) => a + b, 0), 8, 'F');
+      doc.setFontSize(10);
+      let x = marginX + 2;
+      headers.forEach((h, i) => {
+        doc.text(h, x, cursorY);
+        x += colsW[i];
+      });
+      doc.setTextColor(...gray);
+      cursorY += 2;
+    };
+
+    const ensurePage = (next = rowH + 6) => {
+      if (cursorY + next > pageH - 12) {
+        // footer
+        const pageNum = doc.getCurrentPageInfo().pageNumber;
+        doc.setFontSize(9);
+        doc.setTextColor(107, 114, 128);
+        doc.text(`Page ${pageNum}`, pageW - 10, pageH - 8, { align: 'right' });
+
+        doc.addPage();
+        // new header
+        doc.setFillColor(...blue);
+        doc.rect(0, 0, pageW, 22, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(16);
+        doc.text('YARD INVENTORY REPORT', 10, 14);
+        doc.setFontSize(10);
+        doc.text(`Generated: ${new Date().toLocaleString()}`, pageW - 10, 14, { align: 'right' });
+
+        doc.setTextColor(...gray);
+        cursorY = 30; // 新页从更靠上位置开始
+        drawHeader();
+      }
+    };
+
+    drawHeader();
+
+    doc.setFontSize(9);
+    rows.forEach((r, idx) => {
+      ensurePage();
+      // zebra
+      if (idx % 2 === 0) {
+        doc.setFillColor(248, 250, 252);
+        doc.rect(marginX, cursorY - 6, colsW.reduce((a, b) => a + b, 0), rowH, 'F');
+      }
+      // cells
+      let x = marginX + 2;
+      const cells = [
+        r.yard,
+        r.class,
+        r.stockLevel ?? '',
+        r.min ?? '',
+        r.max ?? '',
+        r.unreportedWeeks ?? '',
+        fmtDate(r.lastReportDate)
+      ];
+      cells.forEach((cell, i) => {
+        let txt = String(cell ?? '');
+        if ([2,3,4,5].includes(i)) { // right align数字
+          const cellW = colsW[i] - 4;
+          const txtW = doc.getTextWidth(txt);
+          const start = x + cellW - txtW;
+          doc.text(txt, Math.max(start, x), cursorY);
+        } else {
+          doc.text(txt, x, cursorY);
+        }
+        x += colsW[i];
+      });
+      cursorY += rowH - 2;
+    });
+
+    // footer for last page
+    const pageCount = doc.getNumberOfPages();
+    doc.setPage(pageCount);
+    doc.setFontSize(9);
+    doc.setTextColor(107, 114, 128);
+    doc.text(`Page ${pageCount}`, pageW - 10, pageH - 8, { align: 'right' });
+
+    return doc.output('datauristring');
+  };
+
+  // ===== 发送 =====
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const sendTestEmail = async () => {
     try {
       if (!emailjsConfig.serviceId || !emailjsConfig.templateId || !emailjsConfig.publicKey) {
@@ -299,26 +338,22 @@ const AdminSetup = () => {
         return;
       }
 
-      // 1) 拉数据并生成 PDF
       const { summary, rows } = await buildReportData();
       const pdfDataUrl = buildStyledPdfDataUrl({ summary, rows });
-
       if (typeof pdfDataUrl !== 'string' || !pdfDataUrl.startsWith('data:application/pdf')) {
         throw new Error('PDF generation failed.');
       }
 
-      // 2) EmailJS 群发（逐个 + 轻节流）
       emailjs.init(emailjsConfig.publicKey);
       for (const to of recipients) {
         const params = {
           to_email: to,
           report_date: new Date().toLocaleDateString(),
-          pdf_attachment: pdfDataUrl // 模板 Attachments 的 Variable Name 必须是 pdf_attachment
+          pdf_attachment: pdfDataUrl
         };
         await emailjs.send(emailjsConfig.serviceId, emailjsConfig.templateId, params);
         await sleep(1200);
       }
-
       alert('Test email sent successfully!');
     } catch (e) {
       console.error(e);
@@ -326,7 +361,7 @@ const AdminSetup = () => {
     }
   };
 
-  // ===== Yard CRUD =====
+  // ===== CRUD =====
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.yardName.trim()) return;
@@ -446,7 +481,7 @@ const AdminSetup = () => {
 
       {/* Yard CRUD */}
       <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">{editingYard ? 'Edit New Yard' : 'Add New Yard'}</h2>
+        <h2 className="text-xl font-semibold mb-4">{editingYard ? 'Edit Yard' : 'Add New Yard'}</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
