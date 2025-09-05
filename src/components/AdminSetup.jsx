@@ -35,6 +35,10 @@ const AdminSetup = () => {
   });
   const [emailjsConfigSaving, setEmailjsConfigSaving] = useState(false);
 
+  // 折叠开关
+  const [showEmailConfigCard, setShowEmailConfigCard] = useState(true);
+  const [showEmailRecipientsCard, setShowEmailRecipientsCard] = useState(true);
+
   useEffect(() => {
     loadYards();
     const savedCfg = localStorage.getItem('emailConfig');
@@ -167,12 +171,7 @@ const AdminSetup = () => {
         stockLevel: currentStock,
         previousStock,
         stockChange,
-        min: yd.Min,
-        max: yd.Max,
-        isReported: !!currentRecord,
         unreportedWeeks: getUnreportedWeeksCount(yardName, weeklyRecords),
-        isCritical: currentStock != null && yd.Min != null && yd.Max != null &&
-          (currentStock < yd.Min || currentStock > yd.Max),
         lastReportDate
       };
     }).sort((a, b) => a.yard.localeCompare(b.yard));
@@ -181,7 +180,7 @@ const AdminSetup = () => {
     return { summary, rows };
   };
 
-  // ===== 用 jsPDF 绘制“美观表格 + 卡片” =====
+  // ===== PDF：美观表格 + 卡片（无重叠，自动分页）=====
   const buildStyledPdfDataUrl = ({ summary, rows }) => {
     const doc = new jsPDF('p', 'mm', 'a4');
     const pageW = doc.internal.pageSize.getWidth();
@@ -191,14 +190,45 @@ const AdminSetup = () => {
     const blue = [37, 99, 235];      // #2563eb
     const gray = [55, 65, 81];       // #374151
     const lightGray = [229, 231, 235];
-    const zebra = [248, 250, 252];   // 斑马纹
+    const zebra = [248, 250, 252];
     const red = [239, 68, 68];
     const green = [34, 197, 94];
 
-    // 帮助函数
+    // 布局参数
     const marginX = 12;
+    const bottomMargin = 14;
     const innerW = pageW - marginX * 2;
 
+    // 文字测宽
+    const textWidth = (txt, fontSize = 10) => {
+      const cur = doc.getFontSize();
+      doc.setFontSize(fontSize);
+      const w = doc.getTextWidth(String(txt ?? ''));
+      doc.setFontSize(cur);
+      return w;
+    };
+    const ellipsis = (txt, maxWidth, fontSize = 10) => {
+      let s = String(txt ?? '');
+      while (textWidth(s, fontSize) > maxWidth && s.length > 1) {
+        s = s.slice(0, -1);
+      }
+      return s === String(txt ?? '') ? s : (s.slice(0, -1) + '…');
+    };
+    const wrapText = (txt, maxWidth, fontSize = 9) => {
+      if (!txt) return [''];
+      const words = String(txt).split(/,\s*|\s+/);
+      const lines = [];
+      let line = '';
+      words.forEach((w) => {
+        const t = line ? `${line} ${w}` : w;
+        if (textWidth(t, fontSize) <= maxWidth) line = t;
+        else { if (line) lines.push(line); line = w; }
+      });
+      if (line) lines.push(line);
+      return lines;
+    };
+
+    // 页眉
     const drawPageHeader = () => {
       doc.setFillColor(...blue);
       doc.rect(0, 0, pageW, 22, 'F');
@@ -210,40 +240,14 @@ const AdminSetup = () => {
       doc.setTextColor(...gray);
     };
 
-    const textWidth = (txt, fontSize = 10) => {
-      const cur = doc.getFontSize();
-      doc.setFontSize(fontSize);
-      const w = doc.getTextWidth(String(txt));
-      doc.setFontSize(cur);
-      return w;
-    };
-
-    const wrapText = (txt, maxWidth, fontSize = 10) => {
-      if (!txt) return [''];
-      const words = String(txt).split(/,\s*|\s+/);
-      const lines = [];
-      let line = '';
-      words.forEach((w, idx) => {
-        const tentative = line ? `${line} ${w}` : w;
-        if (textWidth(tentative, fontSize) <= maxWidth) {
-          line = tentative;
-        } else {
-          if (line) lines.push(line);
-          line = w;
-        }
-      });
-      if (line) lines.push(line);
-      return lines;
-    };
-
-    // Header
+    // 初始页眉
     drawPageHeader();
 
     // KPI 卡片
-    const boxY = 30;
-    const boxH = 24;
-    const gap = 4;
-    const boxW = (innerW - gap * 3) / 4;
+    const kpiTop = 28;
+    const kpiH = 24;
+    const kpiGap = 4;
+    const kpiW = (innerW - kpiGap * 3) / 4;
     const kpis = [
       { label: 'TOTAL', value: summary.totalStock },
       { label: 'SELF-OWNED', value: summary.selfOwnedStock },
@@ -251,193 +255,170 @@ const AdminSetup = () => {
       { label: 'EXTERNAL', value: summary.externalStock }
     ];
     kpis.forEach((k, i) => {
-      const x = marginX + i * (boxW + gap);
+      const x = marginX + i * (kpiW + kpiGap);
       doc.setDrawColor(...lightGray);
       doc.setFillColor(248, 250, 252);
-      doc.roundedRect(x, boxY, boxW, boxH, 2, 2, 'FD');
+      doc.roundedRect(x, kpiTop, kpiW, kpiH, 2, 2, 'FD');
       doc.setFontSize(9);
-      doc.setTextColor(...gray);
-      doc.text(k.label, x + 4, boxY + 8);
+      doc.text(k.label, x + 4, kpiTop + 8);
       doc.setFontSize(14);
       doc.setTextColor(...blue);
-      doc.text(fmtNumber(k.value), x + 4, boxY + 17);
+      doc.text(fmtNumber(k.value), x + 4, kpiTop + 17);
       doc.setTextColor(...gray);
     });
 
-    // Missing data 卡片
-    let cursorY = boxY + boxH + 6;
+    // “缺报”提示卡片
+    let cursorY = kpiTop + kpiH + 8;
     if ((summary.unreportedYards?.length || 0) > 0) {
       const cardX = marginX;
       const cardW = innerW;
       const title = `Yards missing data this week: ${summary.unreportedYards.length}`;
       const list = summary.unreportedYards.join(', ');
-      const lines = wrapText(list, cardW - 12, 9); // 适配宽度
-      const contentH = 6 + lines.length * 5; // 估算高度
-      const cardH = 10 + contentH;
+      const lines = wrapText(list, cardW - 12, 9);
+      const contentH = 6 + lines.length * 5;
+      const cardH = 12 + contentH;
 
-      // 卡片本体
+      // 卡片背景
       doc.setDrawColor(...lightGray);
       doc.setFillColor(255, 245, 245);
       doc.roundedRect(cardX, cursorY, cardW, cardH, 2, 2, 'FD');
-      // 左侧红色强调条
+      // 左侧强调条
       doc.setFillColor(...red);
       doc.rect(cardX, cursorY, 3, cardH, 'F');
 
       // 标题
       doc.setTextColor(...red);
       doc.setFontSize(11);
-      doc.text(title, cardX + 6, cursorY + 7);
+      doc.text(title, cardX + 6, cursorY + 8);
       // 内容
       doc.setTextColor(...gray);
       doc.setFontSize(9);
-      let ty = cursorY + 13;
-      lines.forEach(ln => {
-        doc.text(ln, cardX + 6, ty);
-        ty += 5;
-      });
+      let ty = cursorY + 14;
+      lines.forEach(ln => { doc.text(ln, cardX + 6, ty); ty += 5; });
 
-      cursorY += cardH + 6;
+      cursorY += cardH + 8;
     }
 
-    // 表格列定义（5 列）
-    const headers = [
-      'Yard',
-      'Class',
-      'Stock Level',
-      'Unreported Weeks',
-      'Last Report Date'
-    ];
-    const colsW = [60, 28, 40, 28, 30]; // 合计 186，与 innerW 相等
-    const headerH = 12;
-    const rowH = 13; // 更高更舒展
+    // ===== 表格（5 列）=====
+    // 列宽总和要等于 innerW
+    const colsW = [60, 28, 44, 28, 26]; // 合计 186（适配 A4，边距 12）
+    const tableHeaderH = 14; // 两行表头
+    const rowH = 14;         // 行高
 
-    const drawTableHeader = () => {
+    const drawTableHeaderAt = (topY) => {
       // 背景条
       doc.setFillColor(...blue);
-      doc.rect(marginX, cursorY, innerW, headerH, 'F');
-      // 文字（白色）
-      doc.setTextColor(255, 255, 255);
-      doc.setFontSize(10);
+      doc.rect(marginX, topY, innerW, tableHeaderH, 'F');
 
-      let x = marginX + 3;
+      // 白字标题
+      doc.setTextColor(255, 255, 255);
       // Yard
-      doc.text(headers[0], x, cursorY + 8);
+      let x = marginX + 3;
+      doc.setFontSize(10);
+      doc.text('Yard', x, topY + 9);
       x += colsW[0];
 
       // Class
-      doc.text(headers[1], x + 3, cursorY + 8);
+      doc.text('Class', x + 3, topY + 9);
       x += colsW[1];
 
-      // Stock Level (两行标题)
-      doc.text('Stock Level', x + 3, cursorY + 6);
+      // Stock Level（两行）
+      doc.text('Stock Level', x + 3, topY + 7);
       doc.setFontSize(8);
-      doc.text('(change from last data)', x + 3, cursorY + 10);
+      doc.text('(change from last data)', x + 3, topY + 11);
       doc.setFontSize(10);
       x += colsW[2];
 
       // Unreported Weeks
-      doc.text(headers[3], x + 3, cursorY + 8);
+      doc.text('Unreported Weeks', x + 3, topY + 9);
       x += colsW[3];
 
       // Last Report Date
-      doc.text(headers[4], x + 3, cursorY + 8);
+      doc.text('Last Report Date', x + 3, topY + 9);
 
       // 复原颜色
       doc.setTextColor(...gray);
-      cursorY += headerH + 1;
     };
 
-    const ensurePage = () => {
-      if (cursorY + rowH + 12 > pageH) {
-        // 页脚
-        const pn = doc.getCurrentPageInfo().pageNumber;
-        doc.setFontSize(9);
-        doc.setTextColor(107, 114, 128);
-        doc.text(`Page ${pn}`, pageW - marginX, pageH - 8, { align: 'right' });
-
-        // 新页
-        doc.addPage();
-        drawPageHeader();
-        cursorY = 30; // 新页起点
-        drawTableHeader();
-      }
+    const addNewPageWithHeader = () => {
+      doc.addPage();
+      drawPageHeader();
     };
 
+    // 如果当前剩余空间不足以容纳表头，换页
+    if (cursorY + tableHeaderH + bottomMargin > pageH) {
+      addNewPageWithHeader();
+      cursorY = 28; // 新页内容起点
+    }
     // 画表头
-    drawTableHeader();
+    drawTableHeaderAt(cursorY);
+    cursorY += tableHeaderH + 2;
 
-    // 表体
+    // 行渲染
     rows.forEach((r, idx) => {
-      ensurePage();
+      // 若不足以放下一整行，则换页并重画表头
+      if (cursorY + rowH + bottomMargin > pageH) {
+        addNewPageWithHeader();
+        cursorY = 28;
+        drawTableHeaderAt(cursorY);
+        cursorY += tableHeaderH + 2;
+      }
 
-      // 斑马纹背景
+      const rowTop = cursorY;
+      // 斑马纹
       if (idx % 2 === 0) {
         doc.setFillColor(...zebra);
-        doc.rect(marginX, cursorY - 9, innerW, rowH, 'F');
+        doc.rect(marginX, rowTop, innerW, rowH, 'F');
       }
 
-      // 列起点
-      let x = marginX;
-
-      // Yard（左对齐，避免溢出）
-      const yardTxt = String(r.yard || '');
-      const yardPad = 3;
+      // Yard
+      let x = marginX + 3;
       doc.setFontSize(10);
-      // 过长裁剪
-      let yardDraw = yardTxt;
-      while (textWidth(yardDraw) > colsW[0] - yardPad * 2 && yardDraw.length > 3) {
-        yardDraw = yardDraw.slice(0, -1);
-      }
-      if (yardDraw !== yardTxt) yardDraw = yardDraw.slice(0, -1) + '…';
-      doc.text(yardDraw, x + yardPad, cursorY);
+      const yardTxt = ellipsis(r.yard, colsW[0] - 6, 10);
+      doc.text(yardTxt, x, rowTop + 9);
       x += colsW[0];
 
-      // Class（左对齐）
-      const clsTxt = String(r.class || '');
-      doc.text(clsTxt, x + yardPad, cursorY);
+      // Class
+      const clsTxt = ellipsis(r.class, colsW[1] - 6, 10);
+      doc.text(clsTxt, x + 3, rowTop + 9);
       x += colsW[1];
 
-      // Stock Level（两行：数值 + Δ变化，右对齐）
+      // Stock Level（数值 + Δ变化）
       const stockTxt = fmtNumber(r.stockLevel);
       const changeVal = r.stockChange;
       const changeTxt = (changeVal == null) ? '—' : (changeVal > 0 ? `+${changeVal}` : `${changeVal}`);
-      // 顶部数值
+      // 数值（右对齐，稍靠上）
       doc.setFontSize(11);
-      const stockWidth = textWidth(stockTxt, 11);
-      doc.text(stockTxt, x + colsW[2] - 3, cursorY - 2, { align: 'right' });
-      // 底部 Δ
+      doc.text(stockTxt, x + colsW[2] - 3, rowTop + 8, { align: 'right' });
+      // Δ（右对齐，小号，带颜色）
       doc.setFontSize(8);
-      if (changeVal == null) {
-        doc.setTextColor(107, 114, 128);
-      } else if (changeVal > 0) {
-        doc.setTextColor(...green);
-      } else if (changeVal < 0) {
-        doc.setTextColor(...red);
-      } else {
-        doc.setTextColor(107, 114, 128);
-      }
-      doc.text(`Δ ${changeTxt}`, x + colsW[2] - 3, cursorY + 3, { align: 'right' });
+      if (changeVal == null) doc.setTextColor(107, 114, 128);
+      else if (changeVal > 0) doc.setTextColor(...green);
+      else if (changeVal < 0) doc.setTextColor(...red);
+      else doc.setTextColor(107, 114, 128);
+      doc.text(`Δ ${changeTxt}`, x + colsW[2] - 3, rowTop + 12, { align: 'right' });
       doc.setTextColor(...gray);
       x += colsW[2];
 
-      // Unreported Weeks（数字右对齐）
+      // Unreported Weeks（右对齐）
       doc.setFontSize(10);
-      const uwTxt = fmtNumber(r.unreportedWeeks);
-      doc.text(String(uwTxt), x + colsW[3] - 3, cursorY, { align: 'right' });
+      doc.text(String(fmtNumber(r.unreportedWeeks)), x + colsW[3] - 3, rowTop + 9, { align: 'right' });
       x += colsW[3];
 
       // Last Report Date（左对齐）
-      doc.text(fmtDate(r.lastReportDate), x + 3, cursorY);
+      doc.text(fmtDate(r.lastReportDate), x + 3, rowTop + 9);
 
       cursorY += rowH;
     });
 
-    // 最后一页页脚
-    const pageCount = doc.getNumberOfPages();
-    doc.setPage(pageCount);
-    doc.setFontSize(9);
-    doc.setTextColor(107, 114, 128);
-    doc.text(`Page ${pageCount}`, pageW - marginX, pageH - 8, { align: 'right' });
+    // 页码（事后统一写，避免计算当前页号）
+    const total = doc.getNumberOfPages();
+    for (let i = 1; i <= total; i++) {
+      doc.setPage(i);
+      doc.setFontSize(9);
+      doc.setTextColor(107, 114, 128);
+      doc.text(`Page ${i} of ${total}`, pageW - marginX, pageH - 8, { align: 'right' });
+    }
 
     return doc.output('datauristring');
   };
@@ -540,64 +521,101 @@ const AdminSetup = () => {
     <div className="space-y-6">
       {/* EmailJS Config */}
       <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">EmailJS Configuration</h2>
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-          <ol className="text-sm text-blue-700 space-y-1">
-            <li>1) 在 EmailJS 模板的 <b>Attachments</b> 里添加 <b>Variable Attachment</b></li>
-            <li>2) <b>Parameter Name = pdf_attachment</b>, <b>Content Type = PDF</b>, 文件名可固定为 <code>yard-report.pdf</code></li>
-            <li>3) 模板正文可使用变量：<code>{'{{to_email}}'}</code>, <code>{'{{report_date}}'}</code></li>
-          </ol>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Service ID</label>
-            <input name="serviceId" value={emailjsConfig.serviceId} onChange={handleEmailjsConfigChange}
-                   className="w-full px-3 py-2 border rounded-md" placeholder="service_xxx" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Template ID</label>
-            <input name="templateId" value={emailjsConfig.templateId} onChange={handleEmailjsConfigChange}
-                   className="w-full px-3 py-2 border rounded-md" placeholder="template_xxx" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Public Key</label>
-            <input name="publicKey" value={emailjsConfig.publicKey} onChange={handleEmailjsConfigChange}
-                   className="w-full px-3 py-2 border rounded-md" placeholder="public_xxx" />
-          </div>
-        </div>
-        <div className="flex space-x-3 mt-4">
-          <button onClick={saveEmailjsConfig} disabled={emailjsConfigSaving}
-                  className="bg-green-500 text-white px-4 py-2 rounded-md">
-            {emailjsConfigSaving ? 'Saving...' : 'Save EmailJS Configuration'}
-          </button>
-          <button onClick={sendTestEmail}
-                  disabled={!emailConfig.recipients || !emailjsConfig.serviceId || !emailjsConfig.templateId || !emailjsConfig.publicKey}
-                  className="bg-blue-500 text-white px-4 py-2 rounded-md">
-            Send Test Email (Styled PDF)
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold">EmailJS Configuration</h2>
+          <button
+            onClick={() => setShowEmailConfigCard(s => !s)}
+            className="text-sm text-blue-600 hover:text-blue-800"
+          >
+            {showEmailConfigCard ? 'Hide' : 'Show'}
           </button>
         </div>
+
+        {showEmailConfigCard && (
+          <>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+              <ol className="text-sm text-blue-700 space-y-1">
+                <li>1) 在 EmailJS 模板的 <b>Attachments</b> 里添加 <b>Variable Attachment</b></li>
+                <li>2) <b>Parameter Name = pdf_attachment</b>, <b>Content Type = PDF</b>, 文件名可固定为 <code>yard-report.pdf</code></li>
+                <li>3) 模板正文可使用变量：<code>{'{{to_email}}'}</code>, <code>{'{{report_date}}'}</code></li>
+              </ol>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Service ID</label>
+                <input name="serviceId" value={emailjsConfig.serviceId} onChange={handleEmailjsConfigChange}
+                      className="w-full px-3 py-2 border rounded-md" placeholder="service_xxx" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Template ID</label>
+                <input name="templateId" value={emailjsConfig.templateId} onChange={handleEmailjsConfigChange}
+                      className="w-full px-3 py-2 border rounded-md" placeholder="template_xxx" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Public Key</label>
+                <input name="publicKey" value={emailjsConfig.publicKey} onChange={handleEmailjsConfigChange}
+                      className="w-full px-3 py-2 border rounded-md" placeholder="public_xxx" />
+              </div>
+            </div>
+
+            <div className="flex space-x-3 mt-4">
+              <button onClick={saveEmailjsConfig} disabled={emailjsConfigSaving}
+                      className="bg-green-500 text-white px-4 py-2 rounded-md">
+                {emailjsConfigSaving ? 'Saving...' : 'Save EmailJS Configuration'}
+              </button>
+              <button onClick={sendTestEmail}
+                      disabled={!emailConfig.recipients || !emailjsConfig.serviceId || !emailjsConfig.templateId || !emailjsConfig.publicKey}
+                      className="bg-blue-500 text-white px-4 py-2 rounded-md">
+                Send Test Email (Styled PDF)
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Email Recipients */}
       <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">Email Recipients</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Recipients (comma-separated)</label>
-            <input name="recipients" value={emailConfig.recipients} onChange={handleEmailConfigChange}
-                   className="w-full px-3 py-2 border rounded-md"
-                   placeholder="email1@example.com, email2@example.com" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Send Time (for manual)</label>
-            <input type="time" name="sendTime" value={emailConfig.sendTime} onChange={handleEmailConfigChange}
-                   className="w-full px-3 py-2 border rounded-md" />
-          </div>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold">Email Recipients</h2>
+          <button
+            onClick={() => setShowEmailRecipientsCard(s => !s)}
+            className="text-sm text-blue-600 hover:text-blue-800"
+          >
+            {showEmailRecipientsCard ? 'Hide' : 'Show'}
+          </button>
         </div>
-        <button onClick={saveEmailConfig} disabled={emailSaving}
-                className="mt-4 bg-green-500 text-white px-4 py-2 rounded-md">
-          {emailSaving ? 'Saving...' : 'Save Email Configuration'}
-        </button>
+
+        {showEmailRecipientsCard && (
+          <>
+            <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-4">
+              <h3 className="text-sm font-medium text-orange-800 mb-2">Note about Scheduled Emails</h3>
+              <p className="text-sm text-orange-700">
+                This is a frontend-only application. Scheduled emails will only work when someone has the app open in their browser.
+                For true automated scheduling, please use a backend service (e.g., Render Cron Job or Firebase Cloud Functions).
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Recipients (comma-separated)</label>
+                <input name="recipients" value={emailConfig.recipients} onChange={handleEmailConfigChange}
+                      className="w-full px-3 py-2 border rounded-md"
+                      placeholder="email1@example.com, email2@example.com" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Send Time (for manual)</label>
+                <input type="time" name="sendTime" value={emailConfig.sendTime} onChange={handleEmailConfigChange}
+                      className="w-full px-3 py-2 border rounded-md" />
+              </div>
+            </div>
+
+            <button onClick={saveEmailConfig} disabled={emailSaving}
+                    className="mt-4 bg-green-500 text-white px-4 py-2 rounded-md">
+              {emailSaving ? 'Saving...' : 'Save Email Configuration'}
+            </button>
+          </>
+        )}
       </div>
 
       {/* Yard CRUD */}
@@ -608,13 +626,13 @@ const AdminSetup = () => {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Yard Name *</label>
               <input name="yardName" value={formData.yardName} onChange={handleInputChange}
-                     disabled={!!editingYard}
-                     className="w-full px-3 py-2 border rounded-md" required />
+                    disabled={!!editingYard}
+                    className="w-full px-3 py-2 border rounded-md" required />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Company</label>
               <input name="company" value={formData.company} onChange={handleInputChange}
-                     className="w-full px-3 py-2 border rounded-md" />
+                    className="w-full px-3 py-2 border rounded-md" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Class *</label>
@@ -628,12 +646,12 @@ const AdminSetup = () => {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Min</label>
               <input type="number" name="min" value={formData.min} onChange={handleInputChange}
-                     className="w-full px-3 py-2 border rounded-md" min="0" />
+                    className="w-full px-3 py-2 border rounded-md" min="0" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Max</label>
               <input type="number" name="max" value={formData.max} onChange={handleInputChange}
-                     className="w-full px-3 py-2 border rounded-md" min="0" />
+                    className="w-full px-3 py-2 border rounded-md" min="0" />
             </div>
           </div>
           <div className="flex gap-3">
