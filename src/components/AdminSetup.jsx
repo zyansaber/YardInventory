@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createYard, updateYard, deleteYard, getAllYards } from '../firebase/database';
 import emailjs from '@emailjs/browser';
 import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
 
 const AdminSetup = () => {
   const [yards, setYards] = useState({});
@@ -62,7 +63,7 @@ const AdminSetup = () => {
     setTimeout(() => {
       setEmailjsConfigSaving(false);
       alert('EmailJS configuration saved successfully!');
-    }, 800);
+    }, 600);
   };
 
   const saveEmailConfig = () => {
@@ -71,42 +72,141 @@ const AdminSetup = () => {
     setTimeout(() => {
       setEmailSaving(false);
       alert('Email configuration saved successfully!');
-    }, 800);
+    }, 600);
   };
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-  // 把 Blob 转成 Data URL（包含 data:application/pdf;base64, 前缀）
-  const blobToDataURL = (blob) =>
-    new Promise((resolve, reject) => {
-      const r = new FileReader();
-      r.onload = () => resolve(r.result);
-      r.onerror = reject;
-      r.readAsDataURL(blob);
+  /** 截图页面上的报告区域为 PDF（A4，多页自动分页）并返回 Data URL */
+  const captureReportAreaToPdfDataUrl = async () => {
+    // 尝试多种常见容器选择器，与你的 Analytics 页面保持兼容
+    const el =
+      document.querySelector('.pdf-content') ||
+      document.querySelector('#pdf-content') ||
+      document.querySelector('#report') ||
+      document.querySelector('#analytics-root');
+
+    if (!el) return null;
+
+    // 用 html2canvas 把该区域渲染为高分辨率画布
+    const canvas = await html2canvas(el, {
+      scale: 2,                // 高清
+      useCORS: true,           // 允许跨域图片
+      logging: false,
+      backgroundColor: '#ffffff',
+      windowWidth: el.scrollWidth,
+      windowHeight: el.scrollHeight
     });
 
+    const imgData = canvas.toDataURL('image/png');
+    const pdf = new jsPDF('p', 'mm', 'a4'); // A4 竖向
+
+    const pdfW = pdf.internal.pageSize.getWidth();   // 210mm
+    const pdfH = pdf.internal.pageSize.getHeight();  // 297mm
+
+    // 以宽度等比缩放图片
+    const imgW = pdfW;
+    const imgH = (canvas.height * imgW) / canvas.width;
+
+    let y = 0;
+    // 首页
+    pdf.addImage(imgData, 'PNG', 0, y, imgW, imgH, undefined, 'FAST');
+
+    // 如果高度超过一页，分页处理
+    let heightLeft = imgH - pdfH;
+    while (heightLeft > 0) {
+      pdf.addPage();
+      y = -(imgH - heightLeft);
+      pdf.addImage(imgData, 'PNG', 0, y, imgW, imgH, undefined, 'FAST');
+      heightLeft -= pdfH;
+    }
+
+    return pdf.output('datauristring'); // 完整 Data URL
+  };
+
+  /** 当页面上没有报告区域时，生成一个“摘要报表 PDF”并返回 Data URL */
+  const buildFallbackPdfDataUrl = () => {
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const marginX = 14;
+    const lineH = 7;
+
+    // 标题
+    pdf.setFontSize(18);
+    pdf.text('Yard Inventory – Summary Report', marginX, 18);
+
+    // 副标题
+    pdf.setFontSize(11);
+    pdf.text(`Generated at: ${new Date().toLocaleString()}`, marginX, 28);
+
+    // 收件人
+    pdf.text(`Recipients: ${(emailConfig.recipients || '').trim() || '-'}`, marginX, 35);
+
+    // 表头
+    const headers = ['Yard', 'Company', 'Class', 'Min', 'Max'];
+    const colsW = [60, 50, 30, 20, 20]; // 总宽 180mm 内
+    let cursorY = 48;
+
+    pdf.setFillColor(245, 245, 245);
+    pdf.rect(marginX, cursorY - 5, colsW.reduce((a, b) => a + b, 0), 8, 'F');
+    pdf.setFontSize(11);
+    let x = marginX;
+    headers.forEach((h, i) => {
+      pdf.text(h, x + 2, cursorY);
+      x += colsW[i];
+    });
+    cursorY += 4;
+
+    // 表体
+    pdf.setFontSize(10);
+    const rows = Object.entries(yards)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, y]) => [
+        name,
+        y?.Company || '',
+        y?.Class || '',
+        y?.Min ?? '',
+        y?.Max ?? ''
+      ]);
+
+    const pageH = pdf.internal.pageSize.getHeight();
+    rows.forEach((row, idx) => {
+      // 分页检查
+      if (cursorY + lineH > pageH - 15) {
+        pdf.addPage();
+        cursorY = 20;
+      }
+      // 绘制一行
+      let colX = marginX;
+      row.forEach((cell, i) => {
+        const txt = String(cell);
+        pdf.text(txt, colX + 2, cursorY);
+        colX += colsW[i];
+      });
+      cursorY += lineH;
+    });
+
+    return pdf.output('datauristring');
+  };
+
+  /** 发送测试邮件（优先截图报告区域 → 否则回退为摘要表） */
   const sendTestEmail = async () => {
     try {
-      // 1) 用 jsPDF 生成“真正的”PDF
-      const doc = new jsPDF();
-      doc.setFontSize(16);
-      doc.text('Yard Report (Test)', 14, 20);
-      doc.setFontSize(11);
-      doc.text(`Generated at: ${new Date().toLocaleString()}`, 14, 30);
+      // 初始化 EmailJS
+      emailjs.init(emailjsConfig.publicKey);
 
-      // 2) 生成 Blob 再转 Data URL（最稳，避免 filename 前缀差异）
-      const pdfBlob = doc.output('blob'); // Blob({ type: 'application/pdf' })
-      const pdfDataUrl = await blobToDataURL(pdfBlob);
+      // 先尝试“截图报告区域”的 PDF
+      let pdfDataUrl = await captureReportAreaToPdfDataUrl();
 
-      // 3) 放宽校验：只要是 application/pdf 的 Data URL 即可
+      // 如果没找到报告区域，回退为摘要 PDF
+      if (!pdfDataUrl || !pdfDataUrl.startsWith('data:application/pdf')) {
+        pdfDataUrl = buildFallbackPdfDataUrl();
+      }
+
       if (typeof pdfDataUrl !== 'string' || !pdfDataUrl.startsWith('data:application/pdf')) {
         throw new Error('PDF generation failed (not a PDF Data URL).');
       }
 
-      // 4) 初始化 emailjs（Public Key）
-      emailjs.init(emailjsConfig.publicKey);
-
-      // 5) 多收件人逐个发送
+      // 多收件人逐个发送（逗号分隔）
       const recipients = (emailConfig.recipients || '')
         .split(',')
         .map(s => s.trim())
@@ -121,7 +221,7 @@ const AdminSetup = () => {
         const templateParams = {
           to_email: to,
           report_date: new Date().toLocaleDateString(),
-          // 关键：传“完整 Data URL”到 Variable Attachment (Parameter Name=pdf_attachment)
+          // 模板 Attachments 的 Variable Attachment 参数名需是 pdf_attachment（PDF 类型）
           pdf_attachment: pdfDataUrl
         };
 
@@ -131,7 +231,7 @@ const AdminSetup = () => {
           templateParams
         );
 
-        // EmailJS 建议做轻微节流（~1 rps）
+        // 轻微节流（EmailJS 建议 1 rps 左右）
         await sleep(1200);
       }
 
