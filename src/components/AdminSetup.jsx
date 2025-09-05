@@ -15,7 +15,7 @@ const AdminSetup = () => {
   const [editingYard, setEditingYard] = useState(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  
+
   // Email scheduling state
   const [emailConfig, setEmailConfig] = useState({
     recipients: '',
@@ -48,16 +48,12 @@ const AdminSetup = () => {
 
   const loadEmailConfig = () => {
     const savedConfig = localStorage.getItem('emailConfig');
-    if (savedConfig) {
-      setEmailConfig(JSON.parse(savedConfig));
-    }
+    if (savedConfig) setEmailConfig(JSON.parse(savedConfig));
   };
 
   const loadEmailjsConfig = () => {
     const savedConfig = localStorage.getItem('emailjsConfig');
-    if (savedConfig) {
-      setEmailjsConfig(JSON.parse(savedConfig));
-    }
+    if (savedConfig) setEmailjsConfig(JSON.parse(savedConfig));
   };
 
   const saveEmailjsConfig = () => {
@@ -78,28 +74,39 @@ const AdminSetup = () => {
     }, 800);
   };
 
-  // 轻微节流，避免 EmailJS 速率限制
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // 把 Blob 转成 Data URL（包含 data:application/pdf;base64, 前缀）
+  const blobToDataURL = (blob) =>
+    new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
 
   const sendTestEmail = async () => {
     try {
-      // 1) 用 jsPDF 生成“真正的”PDF（合法的 %PDF 文件）
+      // 1) 用 jsPDF 生成“真正的”PDF
       const doc = new jsPDF();
       doc.setFontSize(16);
       doc.text('Yard Report (Test)', 14, 20);
       doc.setFontSize(11);
       doc.text(`Generated at: ${new Date().toLocaleString()}`, 14, 30);
 
-      // 2) 拿到“完整 Data URL”（包含 data:application/pdf;base64, 前缀）
-      const pdfDataUrl = doc.output('datauristring');
-      if (!pdfDataUrl.startsWith('data:application/pdf;base64,')) {
+      // 2) 生成 Blob 再转 Data URL（最稳，避免 filename 前缀差异）
+      const pdfBlob = doc.output('blob'); // Blob({ type: 'application/pdf' })
+      const pdfDataUrl = await blobToDataURL(pdfBlob);
+
+      // 3) 放宽校验：只要是 application/pdf 的 Data URL 即可
+      if (typeof pdfDataUrl !== 'string' || !pdfDataUrl.startsWith('data:application/pdf')) {
         throw new Error('PDF generation failed (not a PDF Data URL).');
       }
 
-      // 3) 初始化 emailjs（只用 Public Key）
+      // 4) 初始化 emailjs（Public Key）
       emailjs.init(emailjsConfig.publicKey);
 
-      // 4) 多收件人逐个发送（逗号分隔）
+      // 5) 多收件人逐个发送
       const recipients = (emailConfig.recipients || '')
         .split(',')
         .map(s => s.trim())
@@ -112,12 +119,10 @@ const AdminSetup = () => {
 
       for (const to of recipients) {
         const templateParams = {
-          // 与 EmailJS 模板字段对应
           to_email: to,
           report_date: new Date().toLocaleDateString(),
           // 关键：传“完整 Data URL”到 Variable Attachment (Parameter Name=pdf_attachment)
           pdf_attachment: pdfDataUrl
-          // 说明：如需动态文件名，可在模板中固定 filename=yard-report.pdf，更稳
         };
 
         await emailjs.send(
@@ -126,7 +131,7 @@ const AdminSetup = () => {
           templateParams
         );
 
-        // EmailJS REST 节流 ~1 rps；浏览器 SDK 也建议稍作间隔
+        // EmailJS 建议做轻微节流（~1 rps）
         await sleep(1200);
       }
 
@@ -139,26 +144,17 @@ const AdminSetup = () => {
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData({
-      ...formData,
-      [name]: value
-    });
+    setFormData({ ...formData, [name]: value });
   };
 
   const handleEmailConfigChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setEmailConfig({
-      ...emailConfig,
-      [name]: type === 'checkbox' ? checked : value
-    });
+    setEmailConfig({ ...emailConfig, [name]: type === 'checkbox' ? checked : value });
   };
 
   const handleEmailjsConfigChange = (e) => {
     const { name, value } = e.target;
-    setEmailjsConfig({
-      ...emailjsConfig,
-      [name]: value
-    });
+    setEmailjsConfig({ ...emailjsConfig, [name]: value });
   };
 
   const handleSubmit = async (e) => {
@@ -182,13 +178,7 @@ const AdminSetup = () => {
     }
 
     if (result.success) {
-      setFormData({
-        yardName: '',
-        company: '',
-        class: 'Self-owned',
-        min: '',
-        max: ''
-      });
+      setFormData({ yardName: '', company: '', class: 'Self-owned', min: '', max: '' });
       setEditingYard(null);
       loadYards();
     } else {
@@ -212,23 +202,13 @@ const AdminSetup = () => {
 
   const handleDelete = async (yardName) => {
     if (!confirm(`Are you sure you want to delete ${yardName}?`)) return;
-
     const result = await deleteYard(yardName);
-    if (result.success) {
-      loadYards();
-    } else {
-      alert('Error: ' + result.error);
-    }
+    if (result.success) loadYards();
+    else alert('Error: ' + result.error);
   };
 
   const handleCancel = () => {
-    setFormData({
-      yardName: '',
-      company: '',
-      class: 'Self-owned',
-      min: '',
-      max: ''
-    });
+    setFormData({ yardName: '', company: '', class: 'Self-owned', min: '', max: '' });
     setEditingYard(null);
   };
 
@@ -247,13 +227,11 @@ const AdminSetup = () => {
         <h2 className="text-xl font-semibold mb-4">
           {editingYard ? 'Edit Yard' : 'Add New Yard'}
         </h2>
-        
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Yard Name *
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Yard Name *</label>
               <input
                 type="text"
                 name="yardName"
@@ -264,11 +242,9 @@ const AdminSetup = () => {
                 required
               />
             </div>
-            
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Company
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Company</label>
               <input
                 type="text"
                 name="company"
@@ -277,11 +253,9 @@ const AdminSetup = () => {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Class *
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Class *</label>
               <select
                 name="class"
                 value={formData.class}
@@ -294,11 +268,9 @@ const AdminSetup = () => {
                 <option value="External">External</option>
               </select>
             </div>
-            
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Minimum Stock Level
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Minimum Stock Level</label>
               <input
                 type="number"
                 name="min"
@@ -308,11 +280,9 @@ const AdminSetup = () => {
                 min="0"
               />
             </div>
-            
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Maximum Stock Level
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Maximum Stock Level</label>
               <input
                 type="number"
                 name="max"
@@ -323,7 +293,7 @@ const AdminSetup = () => {
               />
             </div>
           </div>
-          
+
           <div className="flex space-x-3">
             <button
               type="submit"
@@ -332,7 +302,7 @@ const AdminSetup = () => {
             >
               {saving ? 'Saving...' : (editingYard ? 'Update Yard' : 'Add Yard')}
             </button>
-            
+
             {editingYard && (
               <button
                 type="button"
@@ -349,7 +319,7 @@ const AdminSetup = () => {
       {/* EmailJS Configuration */}
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-xl font-semibold mb-4">EmailJS Configuration</h2>
-        
+
         <div className="space-y-4">
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <h3 className="text-sm font-medium text-blue-800 mb-2">Setup Instructions:</h3>
@@ -361,12 +331,10 @@ const AdminSetup = () => {
               <li>5. Fill Service ID, Template ID, Public Key below and save.</li>
             </ol>
           </div>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Service ID
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Service ID</label>
               <input
                 type="text"
                 name="serviceId"
@@ -376,11 +344,9 @@ const AdminSetup = () => {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Template ID
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Template ID</label>
               <input
                 type="text"
                 name="templateId"
@@ -390,11 +356,9 @@ const AdminSetup = () => {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Public Key
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Public Key</label>
               <input
                 type="text"
                 name="publicKey"
@@ -405,7 +369,7 @@ const AdminSetup = () => {
               />
             </div>
           </div>
-          
+
           <div className="flex space-x-3">
             <button
               onClick={saveEmailjsConfig}
@@ -414,7 +378,7 @@ const AdminSetup = () => {
             >
               {emailjsConfigSaving ? 'Saving...' : 'Save EmailJS Configuration'}
             </button>
-            
+
             <button
               onClick={sendTestEmail}
               disabled={
@@ -434,21 +398,19 @@ const AdminSetup = () => {
       {/* Email Configuration */}
       <div className="bg-white rounded-lg shadow p-6">
         <h2 className="text-xl font-semibold mb-4">Email Recipients</h2>
-        
+
         <div className="space-y-4">
           <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
             <h3 className="text-sm font-medium text-orange-800 mb-2">Note about Scheduled Emails:</h3>
             <p className="text-sm text-orange-700">
-              This is a frontend-only application. Scheduled emails will only work when someone has the app open in their browser. 
+              This is a frontend-only application. Scheduled emails will only work when someone has the app open in their browser.
               For true automated scheduling, please use a backend service (e.g., Render Cron Job or Firebase Cloud Functions).
             </p>
           </div>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Recipients (comma-separated)
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Recipients (comma-separated)</label>
               <input
                 type="text"
                 name="recipients"
@@ -458,11 +420,9 @@ const AdminSetup = () => {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Send Time (for manual sending)
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Send Time (for manual sending)</label>
               <input
                 type="time"
                 name="sendTime"
@@ -472,7 +432,7 @@ const AdminSetup = () => {
               />
             </div>
           </div>
-          
+
           <button
             onClick={saveEmailConfig}
             disabled={emailSaving}
@@ -488,7 +448,7 @@ const AdminSetup = () => {
         <div className="px-6 py-4 border-b border-gray-200">
           <h3 className="text-lg font-medium">Existing Yards ({Object.keys(yards).length})</h3>
         </div>
-        
+
         <div className="divide-y divide-gray-100">
           {Object.entries(yards)
             .sort(([a], [b]) => a.localeCompare(b))
@@ -499,21 +459,25 @@ const AdminSetup = () => {
                     <div className="flex items-center space-x-3 mb-1">
                       <h4 className="text-base font-medium text-gray-900 truncate">{yardName}</h4>
                       <span className="text-sm text-gray-500">({yardData.Company || 'No company'})</span>
-                      <span className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-full ${
-                        yardData.Class === 'Self-owned' ? 'bg-green-100 text-green-800' :
-                        yardData.Class === 'JV Dealer' ? 'bg-blue-100 text-blue-800' :
-                        'bg-orange-100 text-orange-800'
-                      }`}>
+                      <span
+                        className={`inline-flex px-2 py-0.5 text-xs font-semibold rounded-full ${
+                          yardData.Class === 'Self-owned'
+                            ? 'bg-green-100 text-green-800'
+                            : yardData.Class === 'JV Dealer'
+                            ? 'bg-blue-100 text-blue-800'
+                            : 'bg-orange-100 text-orange-800'
+                        }`}
+                      >
                         {yardData.Class}
                       </span>
                     </div>
-                    
+
                     <div className="flex items-center space-x-4 text-sm text-gray-600">
                       <span>Min: {yardData.Min || 'Not set'}</span>
                       <span>Max: {yardData.Max || 'Not set'}</span>
                     </div>
                   </div>
-                  
+
                   <div className="flex items-center space-x-2 ml-4">
                     <button
                       onClick={() => handleEdit(yardName)}
@@ -532,7 +496,7 @@ const AdminSetup = () => {
               </div>
             ))}
         </div>
-        
+
         {Object.keys(yards).length === 0 && (
           <div className="text-center py-8 text-gray-500">
             No yards configured yet. Add your first yard above.
