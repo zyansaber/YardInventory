@@ -127,6 +127,7 @@ const AdminSetup = () => {
     const d = new Date(s);
     return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
   };
+  const fmtNumber = (n) => (n == null ? '—' : n.toLocaleString());
 
   const buildReportData = async () => {
     const [weeklyRecords, yardsMap] = await Promise.all([
@@ -164,6 +165,7 @@ const AdminSetup = () => {
         yard: yardName,
         class: yd.Class,
         stockLevel: currentStock,
+        previousStock,
         stockChange,
         min: yd.Min,
         max: yd.Max,
@@ -179,29 +181,69 @@ const AdminSetup = () => {
     return { summary, rows };
   };
 
-  // ===== 用 jsPDF 自绘“好看表格”（自动分页）=====
+  // ===== 用 jsPDF 绘制“美观表格 + 卡片” =====
   const buildStyledPdfDataUrl = ({ summary, rows }) => {
     const doc = new jsPDF('p', 'mm', 'a4');
     const pageW = doc.internal.pageSize.getWidth();
     const pageH = doc.internal.pageSize.getHeight();
 
-    const blue = [37, 99, 235];
-    const gray = [55, 65, 81];
+    // 颜色
+    const blue = [37, 99, 235];      // #2563eb
+    const gray = [55, 65, 81];       // #374151
+    const lightGray = [229, 231, 235];
+    const zebra = [248, 250, 252];   // 斑马纹
+    const red = [239, 68, 68];
+    const green = [34, 197, 94];
+
+    // 帮助函数
+    const marginX = 12;
+    const innerW = pageW - marginX * 2;
+
+    const drawPageHeader = () => {
+      doc.setFillColor(...blue);
+      doc.rect(0, 0, pageW, 22, 'F');
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(16);
+      doc.text('YARD INVENTORY REPORT', marginX, 14);
+      doc.setFontSize(10);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, pageW - marginX, 14, { align: 'right' });
+      doc.setTextColor(...gray);
+    };
+
+    const textWidth = (txt, fontSize = 10) => {
+      const cur = doc.getFontSize();
+      doc.setFontSize(fontSize);
+      const w = doc.getTextWidth(String(txt));
+      doc.setFontSize(cur);
+      return w;
+    };
+
+    const wrapText = (txt, maxWidth, fontSize = 10) => {
+      if (!txt) return [''];
+      const words = String(txt).split(/,\s*|\s+/);
+      const lines = [];
+      let line = '';
+      words.forEach((w, idx) => {
+        const tentative = line ? `${line} ${w}` : w;
+        if (textWidth(tentative, fontSize) <= maxWidth) {
+          line = tentative;
+        } else {
+          if (line) lines.push(line);
+          line = w;
+        }
+      });
+      if (line) lines.push(line);
+      return lines;
+    };
 
     // Header
-    doc.setFillColor(...blue);
-    doc.rect(0, 0, pageW, 22, 'F');
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(16);
-    doc.text('YARD INVENTORY REPORT', 10, 14);
-    doc.setFontSize(10);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, pageW - 10, 14, { align: 'right' });
+    drawPageHeader();
 
-    // KPI
-    doc.setTextColor(...gray);
+    // KPI 卡片
     const boxY = 30;
-    const boxW = (pageW - 20 - 9) / 4;
-    const boxH = 22;
+    const boxH = 24;
+    const gap = 4;
+    const boxW = (innerW - gap * 3) / 4;
     const kpis = [
       { label: 'TOTAL', value: summary.totalStock },
       { label: 'SELF-OWNED', value: summary.selfOwnedStock },
@@ -209,114 +251,193 @@ const AdminSetup = () => {
       { label: 'EXTERNAL', value: summary.externalStock }
     ];
     kpis.forEach((k, i) => {
-      const x = 10 + i * (boxW + 3);
-      doc.setDrawColor(229, 231, 235);
+      const x = marginX + i * (boxW + gap);
+      doc.setDrawColor(...lightGray);
       doc.setFillColor(248, 250, 252);
       doc.roundedRect(x, boxY, boxW, boxH, 2, 2, 'FD');
       doc.setFontSize(9);
+      doc.setTextColor(...gray);
       doc.text(k.label, x + 4, boxY + 8);
       doc.setFontSize(14);
       doc.setTextColor(...blue);
-      doc.text(String(k.value?.toLocaleString?.() ?? k.value), x + 4, boxY + 17);
+      doc.text(fmtNumber(k.value), x + 4, boxY + 17);
       doc.setTextColor(...gray);
     });
 
-    // Warn
-    doc.setFontSize(10);
-    let cursorY = boxY + boxH + 8;
+    // Missing data 卡片
+    let cursorY = boxY + boxH + 6;
     if ((summary.unreportedYards?.length || 0) > 0) {
-      doc.setTextColor(220, 38, 38);
-      doc.text(`⚠ ${summary.unreportedYards.length} yard(s) missing data this week`, 10, cursorY);
+      const cardX = marginX;
+      const cardW = innerW;
+      const title = `Yards missing data this week: ${summary.unreportedYards.length}`;
+      const list = summary.unreportedYards.join(', ');
+      const lines = wrapText(list, cardW - 12, 9); // 适配宽度
+      const contentH = 6 + lines.length * 5; // 估算高度
+      const cardH = 10 + contentH;
+
+      // 卡片本体
+      doc.setDrawColor(...lightGray);
+      doc.setFillColor(255, 245, 245);
+      doc.roundedRect(cardX, cursorY, cardW, cardH, 2, 2, 'FD');
+      // 左侧红色强调条
+      doc.setFillColor(...red);
+      doc.rect(cardX, cursorY, 3, cardH, 'F');
+
+      // 标题
+      doc.setTextColor(...red);
+      doc.setFontSize(11);
+      doc.text(title, cardX + 6, cursorY + 7);
+      // 内容
       doc.setTextColor(...gray);
-    }
-    cursorY += 6;
-
-    // Table
-    const marginX = 10;
-    const headers = ['Yard', 'Class', 'Stock', 'Min', 'Max', 'Unreported', 'Last Report'];
-    const colsW = [48, 25, 22, 16, 16, 28, 35]; // 总宽 190 内
-    const rowH = 8;
-
-    const drawHeader = () => {
-      doc.setFillColor(...blue);
-      doc.setTextColor(255, 255, 255);
-      doc.rect(marginX, cursorY - 6, colsW.reduce((a, b) => a + b, 0), 8, 'F');
-      doc.setFontSize(10);
-      let x = marginX + 2;
-      headers.forEach((h, i) => {
-        doc.text(h, x, cursorY);
-        x += colsW[i];
+      doc.setFontSize(9);
+      let ty = cursorY + 13;
+      lines.forEach(ln => {
+        doc.text(ln, cardX + 6, ty);
+        ty += 5;
       });
+
+      cursorY += cardH + 6;
+    }
+
+    // 表格列定义（5 列）
+    const headers = [
+      'Yard',
+      'Class',
+      'Stock Level',
+      'Unreported Weeks',
+      'Last Report Date'
+    ];
+    const colsW = [60, 28, 40, 28, 30]; // 合计 186，与 innerW 相等
+    const headerH = 12;
+    const rowH = 13; // 更高更舒展
+
+    const drawTableHeader = () => {
+      // 背景条
+      doc.setFillColor(...blue);
+      doc.rect(marginX, cursorY, innerW, headerH, 'F');
+      // 文字（白色）
+      doc.setTextColor(255, 255, 255);
+      doc.setFontSize(10);
+
+      let x = marginX + 3;
+      // Yard
+      doc.text(headers[0], x, cursorY + 8);
+      x += colsW[0];
+
+      // Class
+      doc.text(headers[1], x + 3, cursorY + 8);
+      x += colsW[1];
+
+      // Stock Level (两行标题)
+      doc.text('Stock Level', x + 3, cursorY + 6);
+      doc.setFontSize(8);
+      doc.text('(change from last data)', x + 3, cursorY + 10);
+      doc.setFontSize(10);
+      x += colsW[2];
+
+      // Unreported Weeks
+      doc.text(headers[3], x + 3, cursorY + 8);
+      x += colsW[3];
+
+      // Last Report Date
+      doc.text(headers[4], x + 3, cursorY + 8);
+
+      // 复原颜色
       doc.setTextColor(...gray);
-      cursorY += 2;
+      cursorY += headerH + 1;
     };
 
-    const ensurePage = (next = rowH + 6) => {
-      if (cursorY + next > pageH - 12) {
-        // footer
-        const pageNum = doc.getCurrentPageInfo().pageNumber;
+    const ensurePage = () => {
+      if (cursorY + rowH + 12 > pageH) {
+        // 页脚
+        const pn = doc.getCurrentPageInfo().pageNumber;
         doc.setFontSize(9);
         doc.setTextColor(107, 114, 128);
-        doc.text(`Page ${pageNum}`, pageW - 10, pageH - 8, { align: 'right' });
+        doc.text(`Page ${pn}`, pageW - marginX, pageH - 8, { align: 'right' });
 
+        // 新页
         doc.addPage();
-        // new header
-        doc.setFillColor(...blue);
-        doc.rect(0, 0, pageW, 22, 'F');
-        doc.setTextColor(255, 255, 255);
-        doc.setFontSize(16);
-        doc.text('YARD INVENTORY REPORT', 10, 14);
-        doc.setFontSize(10);
-        doc.text(`Generated: ${new Date().toLocaleString()}`, pageW - 10, 14, { align: 'right' });
-
-        doc.setTextColor(...gray);
-        cursorY = 30; // 新页从更靠上位置开始
-        drawHeader();
+        drawPageHeader();
+        cursorY = 30; // 新页起点
+        drawTableHeader();
       }
     };
 
-    drawHeader();
+    // 画表头
+    drawTableHeader();
 
-    doc.setFontSize(9);
+    // 表体
     rows.forEach((r, idx) => {
       ensurePage();
-      // zebra
+
+      // 斑马纹背景
       if (idx % 2 === 0) {
-        doc.setFillColor(248, 250, 252);
-        doc.rect(marginX, cursorY - 6, colsW.reduce((a, b) => a + b, 0), rowH, 'F');
+        doc.setFillColor(...zebra);
+        doc.rect(marginX, cursorY - 9, innerW, rowH, 'F');
       }
-      // cells
-      let x = marginX + 2;
-      const cells = [
-        r.yard,
-        r.class,
-        r.stockLevel ?? '',
-        r.min ?? '',
-        r.max ?? '',
-        r.unreportedWeeks ?? '',
-        fmtDate(r.lastReportDate)
-      ];
-      cells.forEach((cell, i) => {
-        let txt = String(cell ?? '');
-        if ([2,3,4,5].includes(i)) { // right align数字
-          const cellW = colsW[i] - 4;
-          const txtW = doc.getTextWidth(txt);
-          const start = x + cellW - txtW;
-          doc.text(txt, Math.max(start, x), cursorY);
-        } else {
-          doc.text(txt, x, cursorY);
-        }
-        x += colsW[i];
-      });
-      cursorY += rowH - 2;
+
+      // 列起点
+      let x = marginX;
+
+      // Yard（左对齐，避免溢出）
+      const yardTxt = String(r.yard || '');
+      const yardPad = 3;
+      doc.setFontSize(10);
+      // 过长裁剪
+      let yardDraw = yardTxt;
+      while (textWidth(yardDraw) > colsW[0] - yardPad * 2 && yardDraw.length > 3) {
+        yardDraw = yardDraw.slice(0, -1);
+      }
+      if (yardDraw !== yardTxt) yardDraw = yardDraw.slice(0, -1) + '…';
+      doc.text(yardDraw, x + yardPad, cursorY);
+      x += colsW[0];
+
+      // Class（左对齐）
+      const clsTxt = String(r.class || '');
+      doc.text(clsTxt, x + yardPad, cursorY);
+      x += colsW[1];
+
+      // Stock Level（两行：数值 + Δ变化，右对齐）
+      const stockTxt = fmtNumber(r.stockLevel);
+      const changeVal = r.stockChange;
+      const changeTxt = (changeVal == null) ? '—' : (changeVal > 0 ? `+${changeVal}` : `${changeVal}`);
+      // 顶部数值
+      doc.setFontSize(11);
+      const stockWidth = textWidth(stockTxt, 11);
+      doc.text(stockTxt, x + colsW[2] - 3, cursorY - 2, { align: 'right' });
+      // 底部 Δ
+      doc.setFontSize(8);
+      if (changeVal == null) {
+        doc.setTextColor(107, 114, 128);
+      } else if (changeVal > 0) {
+        doc.setTextColor(...green);
+      } else if (changeVal < 0) {
+        doc.setTextColor(...red);
+      } else {
+        doc.setTextColor(107, 114, 128);
+      }
+      doc.text(`Δ ${changeTxt}`, x + colsW[2] - 3, cursorY + 3, { align: 'right' });
+      doc.setTextColor(...gray);
+      x += colsW[2];
+
+      // Unreported Weeks（数字右对齐）
+      doc.setFontSize(10);
+      const uwTxt = fmtNumber(r.unreportedWeeks);
+      doc.text(String(uwTxt), x + colsW[3] - 3, cursorY, { align: 'right' });
+      x += colsW[3];
+
+      // Last Report Date（左对齐）
+      doc.text(fmtDate(r.lastReportDate), x + 3, cursorY);
+
+      cursorY += rowH;
     });
 
-    // footer for last page
+    // 最后一页页脚
     const pageCount = doc.getNumberOfPages();
     doc.setPage(pageCount);
     doc.setFontSize(9);
     doc.setTextColor(107, 114, 128);
-    doc.text(`Page ${pageCount}`, pageW - 10, pageH - 8, { align: 'right' });
+    doc.text(`Page ${pageCount}`, pageW - marginX, pageH - 8, { align: 'right' });
 
     return doc.output('datauristring');
   };
