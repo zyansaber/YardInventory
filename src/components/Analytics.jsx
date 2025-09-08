@@ -707,7 +707,7 @@ const Analytics = () => {
                 tickLine={false}
                 tick={{ fontSize: 12, fill: '#6b7280' }}
                 tickFormatter={(value) => value.toLocaleString()}
-                domain={yDomain}           {/* NEW: ±10% 动态域 */}
+                domain={yDomain}
                 allowDecimals={false}
               />
               <Tooltip 
