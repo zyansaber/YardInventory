@@ -36,7 +36,6 @@ const Analytics = () => {
       getAllYards(),
       getAllWeeklyRecords()
     ]);
-
     setYards(yardsData);
     setWeeklyRecords(recordsData);
     setLoading(false);
@@ -48,7 +47,7 @@ const Analytics = () => {
     const currentWeek = getWeekStartDate();
     const yardNames = Object.keys(yards);
 
-    // Calculate summary stats
+    // ---- Summary ----
     let totalStock = 0;
     let selfOwnedStock = 0;
     let jvStock = 0;
@@ -56,7 +55,6 @@ const Analytics = () => {
     const unreportedYards = [];
 
     const currentWeekRecords = weeklyRecords[currentWeek]?.records || [];
-    const reportedYards = new Set(currentWeekRecords.map(r => r.dealer));
 
     yardNames.forEach(yardName => {
       const yardData = yards[yardName];
@@ -97,14 +95,13 @@ const Analytics = () => {
       unreportedYards
     });
 
-    // Process chart data
+    // ---- Chart data ----
     const weeks = Object.keys(weeklyRecords).sort();
     const processedData = weeks.map(week => {
       const weekData = { week: formatWeekDate(week) };
       const records = weeklyRecords[week].records || [];
 
       if (selectedYard === 'all') {
-        // Show aggregated data by class
         const classData = { 'Self-owned': 0, 'JV Dealer': 0, 'External': 0 };
         const estimatedData = { 'Self-owned': false, 'JV Dealer': false, 'External': false };
 
@@ -132,7 +129,6 @@ const Analytics = () => {
           weekData[`${selectedClass}_estimated`] = estimatedData[selectedClass];
         }
       } else {
-        // Show specific yard data
         const record = records.find(r => r.dealer === selectedYard);
         if (record) {
           weekData[selectedYard] = record.stock ?? null;
@@ -152,12 +148,11 @@ const Analytics = () => {
 
     setChartData(processedData);
 
-    // Process table data (ONLY show Estimated when this week has no record but we used historical stock)
+    // ---- Table data (only show Estimated when fallback to history for THIS week) ----
     const tableRows = yardNames.map(yardName => {
       const yardData = yards[yardName];
       const currentRecord = currentWeekRecords.find(r => r.dealer === yardName);
 
-      // NEW: 三态（本周上报 / 本周未上报但有历史 / 完全无数据）
       let currentStock = null;
       let isReported = false;
       let isEstimated = false;
@@ -169,27 +164,25 @@ const Analytics = () => {
       } else {
         const lastStock = getLastReportedStock(yardName);
         if (lastStock !== null && lastStock !== undefined) {
-          currentStock = lastStock;
-          isEstimated = true; // 本周无上报，使用历史
+          currentStock = lastStock;   // fallback to last known
+          isEstimated = true;         // only this case shows Estimated
         } else {
-          currentStock = null; // 完全无数据
+          currentStock = null;        // truly no data
           isEstimated = false;
         }
       }
 
-      // Get previous week stock for comparison
       const previousWeek = getPreviousWeek(currentWeek);
       const previousStock = getPreviousWeekStock(yardName, previousWeek);
-      const stockChange = currentStock !== null && previousStock !== null ? currentStock - previousStock : null;
+      const stockChange = (currentStock !== null && previousStock !== null)
+        ? currentStock - previousStock
+        : null;
 
-      // Calculate unreported weeks count - FIXED CALCULATION
       const unreportedWeeksCount = getUnreportedWeeksCount(yardName);
 
-      // Check if stock is in critical range
       const isCritical = currentStock !== null && yardData.Min !== null && yardData.Max !== null &&
                         (currentStock < yardData.Min || currentStock > yardData.Max);
 
-      // Get last report date
       const lastReportDate = getLastReportDate(yardName);
 
       return {
@@ -200,7 +193,7 @@ const Analytics = () => {
         min: yardData.Min,
         max: yardData.Max,
         isReported,
-        isEstimated, // 仅在“本周无上报但回填历史”时为 true
+        isEstimated,               // <— only true when this week is fallback
         unreportedWeeks: unreportedWeeksCount,
         isCritical,
         lastReportDate
@@ -212,13 +205,10 @@ const Analytics = () => {
 
   const getLastReportDate = (yardName) => {
     const weeks = Object.keys(weeklyRecords).sort().reverse();
-
     for (const week of weeks) {
       const records = weeklyRecords[week].records || [];
       const record = records.find(r => r.dealer === yardName);
-      if (record && record.lastUpdated) {
-        return record.lastUpdated;
-      }
+      if (record && record.lastUpdated) return record.lastUpdated;
     }
     return null;
   };
@@ -235,15 +225,11 @@ const Analytics = () => {
 
   const getLastReportedStock = (yardName, beforeWeek = null) => {
     const weeks = Object.keys(weeklyRecords).sort().reverse();
-
     for (const week of weeks) {
       if (beforeWeek && week >= beforeWeek) continue;
-
       const records = weeklyRecords[week].records || [];
       const record = records.find(r => r.dealer === yardName);
-      if (record) {
-        return record.stock;
-      }
+      if (record) return record.stock;
     }
     return null;
   };
@@ -297,7 +283,6 @@ const Analytics = () => {
         />
       );
     }
-
     return (
       <circle
         cx={cx}
@@ -313,13 +298,8 @@ const Analytics = () => {
   const CustomLabel = (props) => {
     const { x, y, value, payload } = props;
     const dataKey = getDataKey();
-
-    if (!payload || !dataKey || value === undefined || value === null) {
-      return null;
-    }
-
+    if (!payload || !dataKey || value === undefined || value === null) return null;
     const isEstimated = payload[`${dataKey}_estimated`] || false;
-
     return (
       <text
         x={x}
@@ -352,32 +332,24 @@ const Analytics = () => {
     );
   };
 
-  // FIXED: Calculate weeks between today's week start and last report date
+  // Unreported weeks = weeks between today's Monday and last reported week
   const getUnreportedWeeksCount = (yardName) => {
-    const currentWeekStart = getWeekStartDate(); // Today's week start (Monday)
+    const currentWeekStart = getWeekStartDate(); // Monday
     const lastReportWeek = getLastReportWeek(yardName);
-
-    if (!lastReportWeek) {
-      return 999;
-    }
-
+    if (!lastReportWeek) return 999;
     const currentDate = new Date(currentWeekStart);
     const lastReportDate = new Date(lastReportWeek);
     const timeDiff = currentDate.getTime() - lastReportDate.getTime();
     const weeksDiff = Math.floor(timeDiff / (7 * 24 * 60 * 60 * 1000));
-
     return Math.max(0, weeksDiff);
   };
 
   const getLastReportWeek = (yardName) => {
     const weeks = Object.keys(weeklyRecords).sort().reverse();
-
     for (const week of weeks) {
       const records = weeklyRecords[week].records || [];
       const hasReport = records.some(r => r.dealer === yardName);
-      if (hasReport) {
-        return week;
-      }
+      if (hasReport) return week;
     }
     return null;
   };
@@ -413,13 +385,11 @@ const Analytics = () => {
 
       let position = 0;
 
-      // Add title
       pdf.setFontSize(16);
       pdf.text('Yard Inventory Report', 105, 15, { align: 'center' });
       pdf.setFontSize(12);
       pdf.text(`Generated: ${new Date().toLocaleDateString('en-GB')}`, 105, 25, { align: 'center' });
 
-      // Add image starting from position 30
       pdf.addImage(imgData, 'PNG', 0, 30, imgWidth, imgHeight);
       heightLeft -= (pageHeight - 30);
 
@@ -430,7 +400,6 @@ const Analytics = () => {
         heightLeft -= pageHeight;
       }
 
-      // Download the PDF
       const fileName = `Yard_Inventory_Report_${new Date().toISOString().split('T')[0]}.pdf`;
       pdf.save(fileName);
 
@@ -462,7 +431,7 @@ const Analytics = () => {
     return latestData[dataKey] || 0;
   };
 
-  // Dynamic Y-axis domain with ±10% padding
+  // Dynamic Y-axis domain with ±10%
   const yDomain = useMemo(() => {
     const dataKey = getDataKey();
     if (!dataKey || chartData.length === 0) return ['auto', 'auto'];
@@ -537,7 +506,7 @@ const Analytics = () => {
           </div>
         </div>
 
-        {/* Comprehensive Table */}
+        {/* Table */}
         <div className="bg-white rounded-lg shadow">
           <div className="px-6 py-4 border-b border-gray-200">
             <h3 className="text-lg font-medium">Yard Overview</h3>
@@ -547,27 +516,13 @@ const Analytics = () => {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Yard
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Class
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Stock Level
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Min
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Max
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Unreported Weeks
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Last Report Date
-                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Yard</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Class</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock Level</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Min</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Max</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unreported Weeks</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Report Date</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -576,9 +531,7 @@ const Analytics = () => {
                     <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">
                       <div className="flex items-center space-x-2">
                         {row.yard}
-                        {row.isCritical && (
-                          <span className="text-red-500" title="Critical Range">⚠️</span>
-                        )}
+                        {row.isCritical && <span className="text-red-500" title="Critical Range">⚠️</span>}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -595,7 +548,6 @@ const Analytics = () => {
                         <span className="text-gray-900">
                           {row.stockLevel !== null ? row.stockLevel.toLocaleString() : 'No data'}
                         </span>
-                        {/* ONLY when this week has no report BUT we used last reported stock */}
                         {row.isEstimated && (
                           <span className="text-xs text-red-600 bg-red-100 px-2 py-1 rounded">
                             Estimated
@@ -618,9 +570,7 @@ const Analytics = () => {
                       {row.max ?? '-'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`${getSeverityColor(row.unreportedWeeks)}`}>
-                        {row.unreportedWeeks}
-                      </span>
+                      <span className={`${getSeverityColor(row.unreportedWeeks)}`}>{row.unreportedWeeks}</span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-gray-500">
                       {formatDateToDDMMYYYY(row.lastReportDate)}
@@ -638,9 +588,7 @@ const Analytics = () => {
         <h3 className="text-lg font-medium mb-4">Filters</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Yard Class
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Yard Class</label>
             <select
               value={selectedClass}
               onChange={(e) => setSelectedClass(e.target.value)}
@@ -654,9 +602,7 @@ const Analytics = () => {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Specific Yard
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Specific Yard</label>
             <select
               value={selectedYard}
               onChange={(e) => setSelectedYard(e.target.value)}
@@ -670,7 +616,6 @@ const Analytics = () => {
           </div>
         </div>
 
-        {/* Unreported Yards Alert */}
         {summaryStats.unreportedYards.length > 0 && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-4">
             <div className="flex items-center mb-2">
