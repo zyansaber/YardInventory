@@ -10,6 +10,10 @@ const DataEntry = () => {
   const [saving, setSaving] = useState({});
   const [unreportedYards, setUnreportedYards] = useState([]);
 
+  // 墨尔本今天（YYYY-MM-DD，仅日期）
+  const melbTodayStr = () =>
+    new Date().toLocaleDateString('en-CA', { timeZone: 'Australia/Melbourne' });
+
   useEffect(() => {
     loadData();
   }, []);
@@ -24,15 +28,16 @@ const DataEntry = () => {
     setYards(yardsData);
     setAllWeeklyRecords(allRecordsData);
     
-    // Initialize date inputs with today's date
-    const today = new Date().toISOString().split('T')[0];
+    // 用墨尔本时区的今天（仅日期）
+    const today = melbTodayStr();
     const initialDates = {};
     const initialStocks = {};
     
     Object.keys(yardsData).forEach(yardName => {
+      // 保持现有写入逻辑不变：初始化为“今天”
       initialDates[yardName] = today;
       
-      // Try to get existing data for today's week
+      // 尝试读取本周已存在的数据
       const weekStart = getWeekStartDate(today);
       const weekRecords = allRecordsData[weekStart]?.records || [];
       const existingRecord = weekRecords.find(r => r.dealer === yardName);
@@ -44,11 +49,24 @@ const DataEntry = () => {
     setDateInputs(initialDates);
     setStockInputs(initialStocks);
     
-    // Calculate unreported yards for current week
-    const currentWeek = getWeekStartDate();
-    const currentWeekRecords = allRecordsData[currentWeek]?.records || [];
-    const reportedYards = new Set(currentWeekRecords.map(r => r.dealer));
-    const unreported = Object.keys(yardsData).filter(yardName => !reportedYards.has(yardName));
+    // 未上报名单：按“周一对周一整周差 >= 1”
+    const currentWeekStart = getWeekStartDate(); // 今天所在周一
+    const getLastReportDateFrom = (recordsData, yard) => {
+      const weeks = Object.keys(recordsData).sort().reverse(); // 新→旧
+      for (const week of weeks) {
+        const recs = recordsData[week]?.records || [];
+        const rec = recs.find(r => r.dealer === yard);
+        if (rec) return rec.lastUpdated || week; // 没有 lastUpdated 就用周键兜底
+      }
+      return null; // 从未上报
+    };
+    const unreported = Object.keys(yardsData).filter((yardName) => {
+      const lastDate = getLastReportDateFrom(allRecordsData, yardName);
+      if (!lastDate) return true; // 从未上报 → 视为未上报
+      const lastWeek = getWeekStartDate(lastDate);
+      const weeksDiff = Math.floor((new Date(currentWeekStart) - new Date(lastWeek)) / (7 * 24 * 60 * 60 * 1000));
+      return weeksDiff >= 1;
+    });
     setUnreportedYards(unreported);
     
     setLoading(false);
@@ -67,7 +85,7 @@ const DataEntry = () => {
       [yardName]: date
     });
 
-    // Load existing data for the selected week
+    // 读取所选日期所在周的数据
     const weekStart = getWeekStartDate(date);
     const weekRecords = allWeeklyRecords[weekStart]?.records || [];
     const existingRecord = weekRecords.find(r => r.dealer === yardName);
@@ -98,6 +116,7 @@ const DataEntry = () => {
       dealer: yardName,
       stock: stockValue,
       status: 'Reported',
+      // 保持原写入逻辑不变：使用系统时区 toISOString 裁到日期
       lastUpdated: new Date().toISOString().split('T')[0]
     };
 
@@ -142,25 +161,26 @@ const DataEntry = () => {
     }
   };
 
+  // 与 Analytics 一致：今天所在周一 与 最近一次有数据的周一 的整周差
   const getUnreportedWeeksCount = (yardName) => {
-    const currentWeek = getWeekStartDate();
-    const weeks = Object.keys(allWeeklyRecords).sort().reverse();
-    let count = 0;
-    
+    const currentWeekStart = getWeekStartDate(); // 今天周一
+    // 找最近一次上报
+    const weeks = Object.keys(allWeeklyRecords).sort().reverse(); // 新→旧
+    let lastDate = null;
     for (const week of weeks) {
-      if (week > currentWeek) continue;
-      
-      const records = allWeeklyRecords[week].records || [];
-      const hasReport = records.some(r => r.dealer === yardName);
-      
-      if (!hasReport) {
-        count++;
-      } else {
+      if (week > currentWeekStart) continue; // 忽略未来
+      const records = allWeeklyRecords[week]?.records || [];
+      const rec = records.find(r => r.dealer === yardName);
+      if (rec) {
+        lastDate = rec.lastUpdated || week;
         break;
       }
     }
-    
-    return count;
+    if (!lastDate) return 999; // 从未上报：给一个大值
+    const lastWeekStart = getWeekStartDate(lastDate);
+    const diffMs = new Date(currentWeekStart) - new Date(lastWeekStart);
+    const weeksDiff = Math.floor(diffMs / (7 * 24 * 60 * 60 * 1000));
+    return Math.max(0, weeksDiff);
   };
 
   const getSeverityColor = (weeksCount) => {
@@ -170,7 +190,7 @@ const DataEntry = () => {
   };
 
   const handleUnreportedYardClick = (yardName) => {
-    // Focus on the yard's input field
+    // 聚焦到该 yard 的输入
     const inputElement = document.getElementById(`stock-${yardName}`);
     if (inputElement) {
       inputElement.focus();
