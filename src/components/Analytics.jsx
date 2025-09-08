@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList } from 'recharts';
 import { getAllYards, getAllWeeklyRecords, getWeekStartDate } from '../firebase/database';
 import jsPDF from 'jspdf';
@@ -336,9 +336,11 @@ const Analytics = () => {
     const lastReportWeek = getLastReportWeek(yardName);
     
     if (!lastReportWeek) {
-      return 999;
+      // If no report found, return a high number or handle as needed
+      return 999; // or return 0, depending on business logic
     }
     
+    // Calculate the difference in weeks
     const currentDate = new Date(currentWeekStart);
     const lastReportDate = new Date(lastReportWeek);
     const timeDiff = currentDate.getTime() - lastReportDate.getTime();
@@ -441,34 +443,6 @@ const Analytics = () => {
     const dataKey = getDataKey();
     return latestData[dataKey] || 0;
   };
-
-  // ---------- NEW: Dynamic Y-axis domain with ±10% padding ----------
-  const yDomain = useMemo(() => {
-    const dataKey = getDataKey();
-    if (!dataKey || chartData.length === 0) return ['auto', 'auto'];
-
-    const values = chartData
-      .map(d => d?.[dataKey])
-      .filter(v => typeof v === 'number' && !isNaN(v));
-
-    if (values.length === 0) return ['auto', 'auto'];
-
-    const minVal = Math.min(...values);
-    const maxVal = Math.max(...values);
-
-    if (minVal === maxVal) {
-      // flat line: add symmetric pad
-      const pad = Math.max(1, Math.round(minVal * 0.1 || 10));
-      return [minVal - pad, maxVal + pad];
-    }
-
-    const range = maxVal - minVal;
-    const pad = range * 0.1;
-    const low = Math.floor(minVal - pad);
-    const high = Math.ceil(maxVal + pad);
-    return [low, high];
-  }, [chartData, selectedYard, selectedClass]);
-  // -------------------------------------------------------------------
 
   return (
     <div className="space-y-6">
@@ -707,8 +681,6 @@ const Analytics = () => {
                 tickLine={false}
                 tick={{ fontSize: 12, fill: '#6b7280' }}
                 tickFormatter={(value) => value.toLocaleString()}
-                domain={yDomain}
-                allowDecimals={false}
               />
               <Tooltip 
                 formatter={(value, name, props) => {
