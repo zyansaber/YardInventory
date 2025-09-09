@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import React, { useState, useEffect, useRef } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList } from 'recharts';
 import { getAllYards, getAllWeeklyRecords, getWeekStartDate } from '../firebase/database';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -28,7 +28,6 @@ const Analytics = () => {
 
   useEffect(() => {
     processData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yards, weeklyRecords, selectedYard, selectedClass]);
 
   const loadData = async () => {
@@ -37,53 +36,55 @@ const Analytics = () => {
       getAllYards(),
       getAllWeeklyRecords()
     ]);
-    setYards(yardsData || {});
-    setWeeklyRecords(recordsData || {});
+    
+    setYards(yardsData);
+    setWeeklyRecords(recordsData);
     setLoading(false);
   };
 
   const processData = () => {
     if (!yards || !weeklyRecords) return;
 
-    const currentWeek = getWeekStartDate(); // e.g. "YYYY-MM-DD" (Monday)
+    const currentWeek = getWeekStartDate();
     const yardNames = Object.keys(yards);
-
-    // ---- Summary ----
+    
+    // Calculate summary stats
     let totalStock = 0;
     let selfOwnedStock = 0;
     let jvStock = 0;
     let externalStock = 0;
     const unreportedYards = [];
-
+    
     const currentWeekRecords = weeklyRecords[currentWeek]?.records || [];
-
+    const reportedYards = new Set(currentWeekRecords.map(r => r.dealer));
+    
     yardNames.forEach(yardName => {
       const yardData = yards[yardName];
       const currentRecord = currentWeekRecords.find(r => r.dealer === yardName);
-
-      let stock = null;
+      let stock = 0;
+      
       if (currentRecord) {
-        stock = currentRecord.stock ?? null;
+        stock = currentRecord.stock;
       } else {
+        // Get last reported stock
         const lastStock = getLastReportedStock(yardName);
-        stock = (lastStock !== null && lastStock !== undefined) ? lastStock : null;
+        if (lastStock !== null) {
+          stock = lastStock;
+        }
         unreportedYards.push(yardName);
       }
-
-      const stockForSum = stock ?? 0;
-      totalStock += stockForSum;
-
+      
+      totalStock += stock;
+      
       switch (yardData.Class) {
         case 'Self-owned':
-          selfOwnedStock += stockForSum;
+          selfOwnedStock += stock;
           break;
         case 'JV Dealer':
-          jvStock += stockForSum;
+          jvStock += stock;
           break;
         case 'External':
-          externalStock += stockForSum;
-          break;
-        default:
+          externalStock += stock;
           break;
       }
     });
@@ -96,23 +97,24 @@ const Analytics = () => {
       unreportedYards
     });
 
-    // ---- Chart data ----
+    // Process chart data
     const weeks = Object.keys(weeklyRecords).sort();
     const processedData = weeks.map(week => {
       const weekData = { week: formatWeekDate(week) };
       const records = weeklyRecords[week].records || [];
-
+      
       if (selectedYard === 'all') {
+        // Show aggregated data by class
         const classData = { 'Self-owned': 0, 'JV Dealer': 0, 'External': 0 };
         const estimatedData = { 'Self-owned': false, 'JV Dealer': false, 'External': false };
-
+        
         yardNames.forEach(yardName => {
           const yardClass = yards[yardName].Class;
           if (selectedClass !== 'all' && yardClass !== selectedClass) return;
-
+          
           const record = records.find(r => r.dealer === yardName);
           if (record) {
-            classData[yardClass] += record.stock || 0;
+            classData[yardClass] += record.stock;
           } else {
             const lastStock = getLastReportedStock(yardName, week);
             if (lastStock !== null) {
@@ -121,7 +123,7 @@ const Analytics = () => {
             }
           }
         });
-
+        
         if (selectedClass === 'all') {
           weekData['Total'] = classData['Self-owned'] + classData['JV Dealer'] + classData['External'];
           weekData['Total_estimated'] = estimatedData['Self-owned'] || estimatedData['JV Dealer'] || estimatedData['External'];
@@ -130,16 +132,15 @@ const Analytics = () => {
           weekData[`${selectedClass}_estimated`] = estimatedData[selectedClass];
         }
       } else {
+        // Show specific yard data
         const record = records.find(r => r.dealer === selectedYard);
         if (record) {
-          weekData[selectedYard] = record.stock ?? null;
+          weekData[selectedYard] = record.stock;
         } else {
           const lastStock = getLastReportedStock(selectedYard, week);
           if (lastStock !== null) {
             weekData[selectedYard] = lastStock;
             weekData[`${selectedYard}_estimated`] = true;
-          } else {
-            weekData[selectedYard] = null;
           }
         }
       }
@@ -149,55 +150,38 @@ const Analytics = () => {
 
     setChartData(processedData);
 
-    // ---- Table data (Estimated 仅在本周无上报但使用历史值回填时显示) ----
+    // Process table data
     const tableRows = yardNames.map(yardName => {
       const yardData = yards[yardName];
       const currentRecord = currentWeekRecords.find(r => r.dealer === yardName);
-
-      let currentStock = null;
-      let isReported = false;
-      let isEstimated = false;
-
-      if (currentRecord) {
-        currentStock = currentRecord.stock ?? null;
-        isReported = true;
-        isEstimated = false;
-      } else {
-        const lastStock = getLastReportedStock(yardName);
-        if (lastStock !== null && lastStock !== undefined) {
-          currentStock = lastStock;   // 用历史值
-          isEstimated = true;         // 仅这种情况显示 Estimated
-        } else {
-          currentStock = null;        // 完全无数据
-          isEstimated = false;
-        }
-      }
-
+      const currentStock = currentRecord ? currentRecord.stock : getLastReportedStock(yardName);
+      
+      // Get previous week stock for comparison
       const previousWeek = getPreviousWeek(currentWeek);
       const previousStock = getPreviousWeekStock(yardName, previousWeek);
-      const stockChange = (currentStock !== null && previousStock !== null)
-        ? currentStock - previousStock
-        : null;
-
+      const stockChange = currentStock !== null && previousStock !== null ? currentStock - previousStock : null;
+      
+      // Calculate unreported weeks count - FIXED CALCULATION
       const unreportedWeeksCount = getUnreportedWeeksCount(yardName);
-
-      const isCritical = currentStock !== null && yardData.Min !== null && yardData.Max !== null &&
+      
+      // Check if stock is in critical range
+      const isCritical = currentStock !== null && yardData.Min !== null && yardData.Max !== null && 
                         (currentStock < yardData.Min || currentStock > yardData.Max);
-
+      
+      // Get last report date
       const lastReportDate = getLastReportDate(yardName);
-
+      
       return {
         yard: yardName,
         class: yardData.Class,
         stockLevel: currentStock,
-        stockChange,
+        stockChange: stockChange,
         min: yardData.Min,
         max: yardData.Max,
-        isReported,
-        isEstimated,
+        isReported: !!currentRecord,
         unreportedWeeks: unreportedWeeksCount,
-        isCritical,
-        lastReportDate
+        isCritical: isCritical,
+        lastReportDate: lastReportDate
       };
     }).sort((a, b) => a.yard.localeCompare(b.yard));
 
@@ -206,10 +190,13 @@ const Analytics = () => {
 
   const getLastReportDate = (yardName) => {
     const weeks = Object.keys(weeklyRecords).sort().reverse();
+    
     for (const week of weeks) {
       const records = weeklyRecords[week].records || [];
       const record = records.find(r => r.dealer === yardName);
-      if (record && record.lastUpdated) return record.lastUpdated;
+      if (record && record.lastUpdated) {
+        return record.lastUpdated;
+      }
     }
     return null;
   };
@@ -217,7 +204,6 @@ const Analytics = () => {
   const formatDateToDDMMYYYY = (dateString) => {
     if (!dateString) return 'No data';
     const date = new Date(dateString);
-    if (isNaN(date)) return 'No data';
     const day = date.getDate().toString().padStart(2, '0');
     const month = (date.getMonth() + 1).toString().padStart(2, '0');
     const year = date.getFullYear();
@@ -226,11 +212,15 @@ const Analytics = () => {
 
   const getLastReportedStock = (yardName, beforeWeek = null) => {
     const weeks = Object.keys(weeklyRecords).sort().reverse();
+    
     for (const week of weeks) {
       if (beforeWeek && week >= beforeWeek) continue;
+      
       const records = weeklyRecords[week].records || [];
       const record = records.find(r => r.dealer === yardName);
-      if (record) return record.stock;
+      if (record) {
+        return record.stock;
+      }
     }
     return null;
   };
@@ -269,24 +259,106 @@ const Analytics = () => {
     return selectedYard;
   };
 
-  // 未上报周数 = 今天所在周(周一) 与 最近一次上报所在周(周一) 的差
+  const CustomDot = (props) => {
+    const { cx, cy, payload } = props;
+    const dataKey = getDataKey();
+    const isEstimated = payload && payload[`${dataKey}_estimated`];
+    
+    if (isEstimated) {
+      return (
+        <polygon
+          points={`${cx},${cy-6} ${cx-5},${cy+4} ${cx+5},${cy+4}`}
+          fill={getLineColor(dataKey)}
+          stroke={getLineColor(dataKey)}
+          strokeWidth={2}
+        />
+      );
+    }
+    
+    return (
+      <circle
+        cx={cx}
+        cy={cy}
+        r={4}
+        fill={getLineColor(dataKey)}
+        stroke={getLineColor(dataKey)}
+        strokeWidth={2}
+      />
+    );
+  };
+
+  const CustomLabel = (props) => {
+    const { x, y, value, payload } = props;
+    const dataKey = getDataKey();
+    
+    // Safety checks
+    if (!payload || !dataKey || value === undefined || value === null) {
+      return null;
+    }
+    
+    const isEstimated = payload[`${dataKey}_estimated`] || false;
+    
+    return (
+      <text
+        x={x}
+        y={y - 15}
+        fill={getLineColor(dataKey)}
+        textAnchor="middle"
+        fontSize="11"
+        fontWeight="600"
+      >
+        <tspan x={x} dy="0">{value ? value.toLocaleString() : ''}</tspan>
+        <tspan x={x} dy="12" fontSize="10">{isEstimated ? '△' : '●'}</tspan>
+      </text>
+    );
+  };
+
+  const CustomLegend = (props) => {
+    return (
+      <div className="flex items-center justify-center space-x-6 mt-4">
+        <div className="flex items-center space-x-2">
+          <circle cx="8" cy="8" r="4" fill={getLineColor(getDataKey())} className="w-4 h-4" />
+          <span className="text-sm text-gray-600">Reported Data (●)</span>
+        </div>
+        <div className="flex items-center space-x-2">
+          <svg width="16" height="16" viewBox="0 0 16 16">
+            <polygon points="8,2 3,14 13,14" fill={getLineColor(getDataKey())} />
+          </svg>
+          <span className="text-sm text-gray-600">Estimated Data (△)</span>
+        </div>
+      </div>
+    );
+  };
+
+  // FIXED: Calculate weeks between today's week start and last report date
   const getUnreportedWeeksCount = (yardName) => {
-    const currentWeekStart = getWeekStartDate(); // Monday string
+    const currentWeekStart = getWeekStartDate(); // Today's week start (Monday)
     const lastReportWeek = getLastReportWeek(yardName);
-    if (!lastReportWeek) return 999;
+    
+    if (!lastReportWeek) {
+      // If no report found, return a high number or handle as needed
+      return 999; // or return 0, depending on business logic
+    }
+    
+    // Calculate the difference in weeks
     const currentDate = new Date(currentWeekStart);
     const lastReportDate = new Date(lastReportWeek);
     const timeDiff = currentDate.getTime() - lastReportDate.getTime();
     const weeksDiff = Math.floor(timeDiff / (7 * 24 * 60 * 60 * 1000));
+    
     return Math.max(0, weeksDiff);
   };
 
+  // Helper function to get the week of the last report for a yard
   const getLastReportWeek = (yardName) => {
     const weeks = Object.keys(weeklyRecords).sort().reverse();
+    
     for (const week of weeks) {
       const records = weeklyRecords[week].records || [];
       const hasReport = records.some(r => r.dealer === yardName);
-      if (hasReport) return week;
+      if (hasReport) {
+        return week;
+      }
     }
     return null;
   };
@@ -312,34 +384,37 @@ const Analytics = () => {
         allowTaint: true,
         backgroundColor: '#ffffff'
       });
-
+      
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF('p', 'mm', 'a4');
       const imgWidth = 210;
       const pageHeight = 295;
       const imgHeight = (canvas.height * imgWidth) / canvas.width;
       let heightLeft = imgHeight;
-
+      
       let position = 0;
-
+      
+      // Add title
       pdf.setFontSize(16);
       pdf.text('Yard Inventory Report', 105, 15, { align: 'center' });
       pdf.setFontSize(12);
       pdf.text(`Generated: ${new Date().toLocaleDateString('en-GB')}`, 105, 25, { align: 'center' });
-
+      
+      // Add image starting from position 30
       pdf.addImage(imgData, 'PNG', 0, 30, imgWidth, imgHeight);
       heightLeft -= (pageHeight - 30);
-
+      
       while (heightLeft >= 0) {
         position = heightLeft - imgHeight + 30;
         pdf.addPage();
         pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
         heightLeft -= pageHeight;
       }
-
+      
+      // Download the PDF
       const fileName = `Yard_Inventory_Report_${new Date().toISOString().split('T')[0]}.pdf`;
       pdf.save(fileName);
-
+      
     } catch (error) {
       console.error('Error generating PDF:', error);
       alert('Error generating PDF. Please try again.');
@@ -361,38 +436,13 @@ const Analytics = () => {
     return true;
   });
 
+  // Get current trend value
   const getCurrentTrendValue = () => {
     if (chartData.length === 0) return 0;
     const latestData = chartData[chartData.length - 1];
     const dataKey = getDataKey();
     return latestData[dataKey] || 0;
   };
-
-  // Y 轴动态域（±10%）
-  const yDomain = useMemo(() => {
-    const dataKey = getDataKey();
-    if (!dataKey || chartData.length === 0) return ['auto', 'auto'];
-
-    const values = chartData
-      .map(d => d?.[dataKey])
-      .filter(v => typeof v === 'number' && !isNaN(v));
-
-    if (values.length === 0) return ['auto', 'auto'];
-
-    const minVal = Math.min(...values);
-    const maxVal = Math.max(...values);
-
-    if (minVal === maxVal) {
-      const pad = Math.max(1, Math.round(minVal * 0.1 || 10));
-      return [minVal - pad, maxVal + pad];
-    }
-
-    const range = maxVal - minVal;
-    const pad = range * 0.1;
-    const low = Math.floor(minVal - pad);
-    const high = Math.ceil(maxVal + pad);
-    return [low, high];
-  }, [chartData, selectedYard, selectedClass]);
 
   return (
     <div className="space-y-6">
@@ -443,23 +493,37 @@ const Analytics = () => {
           </div>
         </div>
 
-        {/* Table */}
+        {/* Comprehensive Table */}
         <div className="bg-white rounded-lg shadow">
           <div className="px-6 py-4 border-b border-gray-200">
             <h3 className="text-lg font-medium">Yard Overview</h3>
           </div>
-
+          
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Yard</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Class</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock Level</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Min</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Max</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Unreported Weeks</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last Report Date</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Yard
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Class
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Stock Level
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Min
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Max
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Unreported Weeks
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Last Report Date
+                  </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -468,7 +532,9 @@ const Analytics = () => {
                     <td className="px-6 py-4 whitespace-nowrap font-medium text-gray-900">
                       <div className="flex items-center space-x-2">
                         {row.yard}
-                        {row.isCritical && <span className="text-red-500" title="Critical Range">⚠️</span>}
+                        {row.isCritical && (
+                          <span className="text-red-500" title="Critical Range">⚠️</span>
+                        )}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
@@ -485,29 +551,31 @@ const Analytics = () => {
                         <span className="text-gray-900">
                           {row.stockLevel !== null ? row.stockLevel.toLocaleString() : 'No data'}
                         </span>
-                        {row.isEstimated && (
-                          <span className="text-xs text-red-600 bg-red-100 px-2 py-1 rounded">
-                            Estimated
-                          </span>
-                        )}
                         {row.stockChange !== null && (
                           <span className={`text-sm ${
-                            row.stockChange > 0 ? 'text-green-600' :
+                            row.stockChange > 0 ? 'text-green-600' : 
                             row.stockChange < 0 ? 'text-red-600' : 'text-gray-500'
                           }`}>
-                            ({row.stockChange > 0 ? '+' : ''}{row.stockChange?.toLocaleString()})
+                            ({row.stockChange > 0 ? '+' : ''}{row.stockChange.toLocaleString()})
+                          </span>
+                        )}
+                        {!row.isReported && (
+                          <span className="text-xs text-red-600 bg-red-100 px-2 py-1 rounded">
+                            Estimated
                           </span>
                         )}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                      {row.min ?? '-'}
+                      {row.min || '-'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-gray-500">
-                      {row.max ?? '-'}
+                      {row.max || '-'}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`${getSeverityColor(row.unreportedWeeks)}`}>{row.unreportedWeeks}</span>
+                      <span className={`${getSeverityColor(row.unreportedWeeks)}`}>
+                        {row.unreportedWeeks}
+                      </span>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-gray-500">
                       {formatDateToDDMMYYYY(row.lastReportDate)}
@@ -525,7 +593,9 @@ const Analytics = () => {
         <h3 className="text-lg font-medium mb-4">Filters</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Yard Class</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Yard Class
+            </label>
             <select
               value={selectedClass}
               onChange={(e) => setSelectedClass(e.target.value)}
@@ -537,9 +607,11 @@ const Analytics = () => {
               <option value="External">External</option>
             </select>
           </div>
-
+          
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Specific Yard</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Specific Yard
+            </label>
             <select
               value={selectedYard}
               onChange={(e) => setSelectedYard(e.target.value)}
@@ -553,6 +625,7 @@ const Analytics = () => {
           </div>
         </div>
 
+        {/* Unreported Yards Alert */}
         {summaryStats.unreportedYards.length > 0 && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-4">
             <div className="flex items-center mb-2">
@@ -576,7 +649,7 @@ const Analytics = () => {
         )}
       </div>
 
-      {/* Trend Chart (safe) */}
+      {/* Trend Chart */}
       <div className="bg-white rounded-lg shadow p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-medium">Stock Trends</h3>
@@ -590,27 +663,31 @@ const Analytics = () => {
         <div className="h-96">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 30, right: 30, left: 20, bottom: 5 }}>
+              <defs>
+                <linearGradient id="stockGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={getLineColor(getDataKey())} stopOpacity={0.1}/>
+                  <stop offset="95%" stopColor={getLineColor(getDataKey())} stopOpacity={0}/>
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis
-                dataKey="week"
+              <XAxis 
+                dataKey="week" 
                 axisLine={false}
                 tickLine={false}
                 tick={{ fontSize: 12, fill: '#6b7280' }}
               />
-              <YAxis
+              <YAxis 
                 axisLine={false}
                 tickLine={false}
                 tick={{ fontSize: 12, fill: '#6b7280' }}
                 tickFormatter={(value) => value.toLocaleString()}
-                domain={yDomain}
-                allowDecimals={false}
               />
-              <Tooltip
+              <Tooltip 
                 formatter={(value, name, props) => {
-                  const isEstimatedPoint = props?.payload?.[`${name}_estimated`];
+                  const isEstimated = props.payload[`${name}_estimated`];
                   return [
                     value?.toLocaleString(),
-                    `${name}${isEstimatedPoint ? ' (estimated)' : ''}`
+                    `${name}${isEstimated ? ' (estimated)' : ''}`
                   ];
                 }}
                 contentStyle={{
@@ -625,12 +702,16 @@ const Analytics = () => {
                 dataKey={getDataKey()}
                 stroke={getLineColor(getDataKey())}
                 strokeWidth={3}
-                dot={false}           /* 关闭自定义 dot，避免生产构建的 SVG 坑 */
+                dot={<CustomDot />}
+                fill="url(#stockGradient)"
                 connectNulls={false}
-              />
+              >
+                <LabelList content={<CustomLabel />} />
+              </Line>
             </LineChart>
           </ResponsiveContainer>
         </div>
+        <CustomLegend />
       </div>
     </div>
   );
