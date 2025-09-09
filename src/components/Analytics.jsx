@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LabelList } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { getAllYards, getAllWeeklyRecords, getWeekStartDate } from '../firebase/database';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
@@ -28,6 +28,7 @@ const Analytics = () => {
 
   useEffect(() => {
     processData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yards, weeklyRecords, selectedYard, selectedClass]);
 
   const loadData = async () => {
@@ -36,15 +37,15 @@ const Analytics = () => {
       getAllYards(),
       getAllWeeklyRecords()
     ]);
-    setYards(yardsData);
-    setWeeklyRecords(recordsData);
+    setYards(yardsData || {});
+    setWeeklyRecords(recordsData || {});
     setLoading(false);
   };
 
   const processData = () => {
     if (!yards || !weeklyRecords) return;
 
-    const currentWeek = getWeekStartDate();
+    const currentWeek = getWeekStartDate(); // e.g. "YYYY-MM-DD" (Monday)
     const yardNames = Object.keys(yards);
 
     // ---- Summary ----
@@ -148,7 +149,7 @@ const Analytics = () => {
 
     setChartData(processedData);
 
-    // ---- Table data (only show Estimated when fallback to history for THIS week) ----
+    // ---- Table data (Estimated 仅在本周无上报但使用历史值回填时显示) ----
     const tableRows = yardNames.map(yardName => {
       const yardData = yards[yardName];
       const currentRecord = currentWeekRecords.find(r => r.dealer === yardName);
@@ -164,10 +165,10 @@ const Analytics = () => {
       } else {
         const lastStock = getLastReportedStock(yardName);
         if (lastStock !== null && lastStock !== undefined) {
-          currentStock = lastStock;   // fallback to last known
-          isEstimated = true;         // only this case shows Estimated
+          currentStock = lastStock;   // 用历史值
+          isEstimated = true;         // 仅这种情况显示 Estimated
         } else {
-          currentStock = null;        // truly no data
+          currentStock = null;        // 完全无数据
           isEstimated = false;
         }
       }
@@ -193,7 +194,7 @@ const Analytics = () => {
         min: yardData.Min,
         max: yardData.Max,
         isReported,
-        isEstimated,               // <— only true when this week is fallback
+        isEstimated,
         unreportedWeeks: unreportedWeeksCount,
         isCritical,
         lastReportDate
@@ -268,73 +269,9 @@ const Analytics = () => {
     return selectedYard;
   };
 
-  const CustomDot = (props) => {
-    const { cx, cy, payload } = props;
-    const dataKey = getDataKey();
-    const isEstimated = payload && payload[`${dataKey}_estimated`];
-
-    if (isEstimated) {
-      return (
-        <polygon
-          points={`${cx},${cy-6} ${cx-5},${cy+4} ${cx+5},${cy+4}`}
-          fill={getLineColor(dataKey)}
-          stroke={getLineColor(dataKey)}
-          strokeWidth={2}
-        />
-      );
-    }
-    return (
-      <circle
-        cx={cx}
-        cy={cy}
-        r={4}
-        fill={getLineColor(dataKey)}
-        stroke={getLineColor(dataKey)}
-        strokeWidth={2}
-      />
-    );
-  };
-
-  const CustomLabel = (props) => {
-    const { x, y, value, payload } = props;
-    const dataKey = getDataKey();
-    if (!payload || !dataKey || value === undefined || value === null) return null;
-    const isEstimated = payload[`${dataKey}_estimated`] || false;
-    return (
-      <text
-        x={x}
-        y={y - 15}
-        fill={getLineColor(dataKey)}
-        textAnchor="middle"
-        fontSize="11"
-        fontWeight="600"
-      >
-        <tspan x={x} dy="0">{value ? value.toLocaleString() : ''}</tspan>
-        <tspan x={x} dy="12" fontSize="10">{isEstimated ? '△' : '●'}</tspan>
-      </text>
-    );
-  };
-
-  const CustomLegend = () => {
-    return (
-      <div className="flex items-center justify-center space-x-6 mt-4">
-        <div className="flex items-center space-x-2">
-          <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="4" fill={getLineColor(getDataKey())} /></svg>
-          <span className="text-sm text-gray-600">Reported Data (●)</span>
-        </div>
-        <div className="flex items-center space-x-2">
-          <svg width="16" height="16" viewBox="0 0 16 16">
-            <polygon points="8,2 3,14 13,14" fill={getLineColor(getDataKey())} />
-          </svg>
-          <span className="text-sm text-gray-600">Estimated Data (△)</span>
-        </div>
-      </div>
-    );
-  };
-
-  // Unreported weeks = weeks between today's Monday and last reported week
+  // 未上报周数 = 今天所在周(周一) 与 最近一次上报所在周(周一) 的差
   const getUnreportedWeeksCount = (yardName) => {
-    const currentWeekStart = getWeekStartDate(); // Monday
+    const currentWeekStart = getWeekStartDate(); // Monday string
     const lastReportWeek = getLastReportWeek(yardName);
     if (!lastReportWeek) return 999;
     const currentDate = new Date(currentWeekStart);
@@ -431,7 +368,7 @@ const Analytics = () => {
     return latestData[dataKey] || 0;
   };
 
-  // Dynamic Y-axis domain with ±10%
+  // Y 轴动态域（±10%）
   const yDomain = useMemo(() => {
     const dataKey = getDataKey();
     if (!dataKey || chartData.length === 0) return ['auto', 'auto'];
@@ -639,7 +576,7 @@ const Analytics = () => {
         )}
       </div>
 
-      {/* Trend Chart */}
+      {/* Trend Chart (safe) */}
       <div className="bg-white rounded-lg shadow p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-medium">Stock Trends</h3>
@@ -653,12 +590,6 @@ const Analytics = () => {
         <div className="h-96">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 30, right: 30, left: 20, bottom: 5 }}>
-              <defs>
-                <linearGradient id="stockGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={getLineColor(getDataKey())} stopOpacity={0.1}/>
-                  <stop offset="95%" stopColor={getLineColor(getDataKey())} stopOpacity={0}/>
-                </linearGradient>
-              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis
                 dataKey="week"
@@ -694,16 +625,12 @@ const Analytics = () => {
                 dataKey={getDataKey()}
                 stroke={getLineColor(getDataKey())}
                 strokeWidth={3}
-                dot={<CustomDot />}
-                fill="url(#stockGradient)"
+                dot={false}           /* 关闭自定义 dot，避免生产构建的 SVG 坑 */
                 connectNulls={false}
-              >
-                <LabelList content={<CustomLabel />} />
-              </Line>
+              />
             </LineChart>
           </ResponsiveContainer>
         </div>
-        <CustomLegend />
       </div>
     </div>
   );
